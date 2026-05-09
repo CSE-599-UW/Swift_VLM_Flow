@@ -1,0 +1,17 @@
+# Large model weights — never commit
+models/
+
+# Raw benchmark output (large JSON files)
+results/raw/*.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# HuggingFace / general disk cache
+.cache/
+
+# OS / editor noise
+.DS_Store
+*.swp
