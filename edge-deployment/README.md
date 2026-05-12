@@ -8,7 +8,7 @@ The work is split into two phases:
 
 | Phase | Description | Note |
 |-------|--------|-------------|
-| Phase 1 — PyTorch Baseline | Measure fp16 PyTorch inference on VQAv2; establish reference numbers | What left: `Quality benchmark`
+| Phase 1 — Qwen2-VL Baseline | Measure fp16 PyTorch inference on VQAv2; establish reference numbers | What left: `Quality benchmark`
 | Phase 2 — TensorRT Engine | Convert to TRT fp16 / fp8, re-run benchmark, measure speedup |
 
 Model under test: **Qwen2-VL-2B-Instruct** (fp16, single-batch, VQAv2 validation set)
