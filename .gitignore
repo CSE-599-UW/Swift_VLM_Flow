@@ -1,17 +1,21 @@
-# Large model weights — never commit
-models/*.zip
+# Model weights
+**/models/Qwen2-VL-2B-Instruct/
+*.safetensors
+*.bin
+*.zip
 
-# Raw benchmark output (large JSON files)
-results/raw/*.json
+# Raw benchmark results (large, reproducible)
+**/results/raw/
+**/results/lmms_eval/
 
-# Python cache
+# Python
 __pycache__/
 *.pyc
 *.pyo
-
-# HuggingFace / general disk cache
 .cache/
 
-# OS / editor noise
-.DS_Store
-*.swp
+# Docker
+*.tar
+
+# Keep reports tracked
+!**/results/reports/
