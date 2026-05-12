@@ -8,7 +8,7 @@ import os
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 MODEL_PATH = "/workspace/models/Qwen2-VL-2B-Instruct"
-RESULTS_DIR = "/workspace/benchmark/results"
+RESULTS_DIR = "/workspace/results"
 RAW_DIR = os.path.join(RESULTS_DIR, "raw")
 REPORTS_DIR = os.path.join(RESULTS_DIR, "reports")
 

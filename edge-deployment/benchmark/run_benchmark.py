@@ -29,8 +29,6 @@ from qwen_vl_utils import process_vision_info
 import config
 import data_loader
 import metrics
-from report_generator import generate_report
-
 
 # ── Argument Parsing ───────────────────────────────────────────────────────────
 
@@ -277,8 +275,8 @@ def main():
     print("=" * 65)
 
     # Generate markdown report + charts
-    report_path = generate_report(raw_path)
-    print(f"\n  Report saved → {report_path}")
+    # report_path = generate_report(raw_path)
+    # print(f"\n  Report saved → {report_path}")
     print("\nDone.")
 
 
