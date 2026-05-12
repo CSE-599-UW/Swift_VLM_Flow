@@ -1,5 +1,5 @@
 # Large model weights — never commit
-# models/
+models/*.zip
 
 # Raw benchmark output (large JSON files)
 results/raw/*.json
