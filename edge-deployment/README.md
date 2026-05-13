@@ -94,6 +94,30 @@ python3 generate_combined_report.py
 
 ---
 
+## TRT Engine Conversion
+
+After establishing the baseline benchmark, convert the model to
+TensorRT for optimized inference:
+
+```bash
+# Inside the container — takes ~15 min, requires 30GB+ RAM
+chmod +x /workspace/scripts/build_trt_engines.sh
+/workspace/scripts/build_trt_engines.sh
+```
+
+> **RAM requirement**: Stage 3 (vision encoder) peaks at ~20GB RAM.
+> See [docs/TensorRT.md](docs/TensorRT.md) for swap expansion instructions
+> if you encounter OOM errors.
+
+After conversion, run the TRT benchmark:
+```bash
+python3 benchmark/run_benchmark_trt.py --num_samples 50 --warmup 3
+```
+
+See [docs/TensorRT.md](docs/TensorRT.md) for full details and known issues.
+
+---
+
 ## Why Two Separate Tools?
 
 `run_benchmark.py` and `lmms-eval` serve fundamentally different purposes and
