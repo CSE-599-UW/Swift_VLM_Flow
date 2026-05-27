@@ -9,7 +9,7 @@ import os
 # ── Paths ──────────────────────────────────────────────────────────────────────
 MODEL_PATH = "/workspace/models/Qwen2-VL-2B-Instruct"
 RESULTS_DIR = "/workspace/results"
-RAW_DIR = os.path.join(RESULTS_DIR, "efficient")
+RAW_DIR = os.path.join(RESULTS_DIR, "efficiency")
 REPORTS_DIR = os.path.join(RESULTS_DIR, "reports")
 
 # ── Model Settings ─────────────────────────────────────────────────────────────

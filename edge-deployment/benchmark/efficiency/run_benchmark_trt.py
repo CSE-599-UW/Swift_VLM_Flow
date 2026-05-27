@@ -28,9 +28,8 @@ from datetime import datetime
 from tensorrt_llm.runtime import MultimodalModelRunner
 
 import config
-import data_loader
 import metrics
-
+import data_loader
 
 # ── Argument Parsing ───────────────────────────────────────────────────────────
 
