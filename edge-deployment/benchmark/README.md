@@ -1,6 +1,8 @@
 # Benchmark — Swift-VLM-Flow
 
-Three-tool benchmark pipeline for Qwen2-VL-2B-Instruct evaluation.
+Evaluation pipeline for Qwen2-VL-2B-Instruct — both **efficiency** (latency, VRAM) and
+**accuracy** (VQAv2, POPE, MME) — covering the HuggingFace baseline and the TensorRT-LLM engine.
+
 Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
 
 ---
@@ -8,113 +10,78 @@ Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
 ## Pipeline Overview
 
 ```
-Tool 1  →  Efficiency (PyTorch baseline)    →  results/efficient/baseline/<id>.json
-Tool 1b →  Efficiency (TensorRT-LLM)        →  results/efficient/trt/<id>.json
-Tool 2  →  Accuracy   (lmms-eval / VQAv2)  →  results/lmms_eval/.../results.json
-Tool 3  →  Report     (charts + Markdown)   →  results/reports/report_<id>.md
+efficiency/
+  run_benchmarks.sh       →  Tool 1 + 1b: latency & VRAM
+      ├── run_benchmark.py          (PyTorch baseline)
+      └── run_benchmark_trt.py      (TensorRT-LLM)
+                                        ↓
+                              results/efficiency/baseline/<id>.json
+                              results/efficiency/trt/<precision>_<id>.json
+
+accuracy/
+  run_accuracy_all.sh     →  Tool 2: VQAv2 / POPE / MME scoring
+      ├── run_accuracy_baseline.py  (HF Transformers)
+      └── run_accuracy_trt.py       (TensorRT-LLM)
+                                        ↓
+                              results/accuracy/baseline/<id>.json
+                              results/accuracy/trt/<precision>_<id>.json
+
+report.py                 →  Tool 3: charts + Markdown report
+                                        ↓
+                              results/reports/report_<id>.md  +  *.png
 ```
 
 ---
 
-## Tool 1 — Efficiency Benchmark (PyTorch baseline)
+## Subdirectories
+
+| Directory | What it measures | Entry point |
+|---|---|---|
+| [efficiency/](efficiency/README.md) | Latency (TTFT, decode ms/tok), VRAM — PyTorch and TRT | `efficiency/run_benchmarks.sh` |
+| [accuracy/](accuracy/README.md) | VQAv2 accuracy, POPE hallucination, MME perception/cognition — PyTorch and TRT | `accuracy/run_accuracy_all.sh` |
+
+---
+
+## Quick Start
+
+### Efficiency
 
 ```bash
-python3 run_benchmark.py [--num_samples N] [--warmup W] [--max_new_tokens T] [--output_tag TAG]
+cd benchmark/efficiency
+bash run_benchmarks.sh --output_tag official_v1
+
+# PyTorch only
+bash run_benchmarks.sh --skip_trt --output_tag baseline
+
+# TRT only
+bash run_benchmarks.sh --skip_baseline --precision bf16 --output_tag trt_bf16
 ```
 
-Default: `--num_samples 50 --warmup 3 --max_new_tokens 50`
+→ See [efficiency/README.md](efficiency/README.md) for the full flag reference.
 
-Loads Qwen2-VL-2B-Instruct in **bf16** via HuggingFace Transformers. Runs VQAv2 samples,
-records per-sample metrics, and writes a JSON to `results/efficient/baseline/`.
-
-**Metrics recorded per sample:**
-
-| Metric | Description |
-|---|---|
-| `ttft_ms` | Time to First Token (ms) — prefill cost |
-| `decode_latency_ms_per_tok` | Decode time per output token (ms/tok) |
-| `dynamic_vram_gb` | Per-inference VRAM increment above static baseline (GB) |
-| `static_vram_gb` | VRAM after model weights load, before any inference (GB) |
-| `output_tokens` | Number of generated tokens |
-
----
-
-## Tool 1b — Efficiency Benchmark (TensorRT-LLM)
+### Accuracy
 
 ```bash
-python3 run_benchmark_trt.py \
-    [--num_samples 50] [--warmup 3] [--max_new_tokens 50] \
-    [--engine_dir /workspace/trt_engines/qwen2vl] \
-    [--precision bf16|fp16|fp8] \
-    [--output_tag TAG]
+cd benchmark/accuracy
+bash run_accuracy_all.sh                        # all tasks, both backends
+bash run_accuracy_all.sh --quick                # smoke-test (20 VQA / 30 POPE / 50 MME)
+bash run_accuracy_all.sh --skip-trt             # HF baseline only
 ```
 
-Mirrors `run_benchmark.py` exactly — same VQAv2 samples (via seed), same metrics,
-same JSON schema — so results are directly comparable. Writes to `results/efficient/trt/`.
+→ See [accuracy/README.md](accuracy/README.md) for scoring details and the full flag reference.
 
-Requires a pre-built TRT engine directory with `llm/` and `vision/` subdirectories.
-
----
-
-## Tool 2 — Accuracy Benchmark (lmms-eval)
-
-```bash
-python -m lmms_eval --model qwen2_vl \
-  --model_args pretrained=/workspace/models/Qwen2-VL-2B-Instruct \
-  --tasks vqav2_val --batch_size 1 --limit 500 \
-  --output_path /workspace/results/lmms_eval/
-```
-
-Measures VQAv2 `exact_match` accuracy using the standard lmms-eval toolkit
-(used by MBQ, LiteVLM, GRACE for apples-to-apples comparison).
-
----
-
-## Tool 3 — Report Generator
+### Report
 
 ```bash
 # Efficiency only
-python3 report.py --efficiency results/efficient/baseline/<id>.json
+python3 report.py --efficiency results/efficiency/baseline/<id>.json
 
-# Efficiency + accuracy
+# Full comparison (baseline + TRT + accuracy)
 python3 report.py \
-    --efficiency results/efficient/baseline/<id>.json \
-    --lmms       results/lmms_eval/.../results.json \
+    --efficiency results/efficiency/baseline/<id>.json \
+    --trt        results/efficiency/trt/<precision>_<id>.json \
+    --lmms       results/accuracy/baseline/<id>.json \
     --output_tag official_v1
-
-# Full comparison (baseline vs TRT, with accuracy)
-python3 report.py \
-    --efficiency results/efficient/baseline/<id>.json \
-    --trt        results/efficient/trt/<id>.json \
-    --lmms       results/lmms_eval/.../results.json \
-    --output_tag official_v1
-```
-
-`--trt` accepts one or more JSON paths for multi-precision comparison (e.g., bf16 + fp8).
-
-**Outputs** (saved to `results/reports/`):
-
-```
-report_<run_id>[_<tag>].md
-latency_dist_<run_id>.png
-vram_breakdown_<run_id>.png
-per_sample_latency_<run_id>.png
-comparison_<run_id>.png          (only when ≥2 backends or lmms results present)
-```
-
----
-
-## File Listing
-
-```
-benchmark/
-├── config.py             # paths, model settings, benchmark hyperparameters
-├── data_loader.py        # VQAv2 streaming loader (HuggingFace, seeded)
-├── metrics.py            # LatencyTimer, VRAM measurement, aggregate statistics
-├── run_benchmark.py      # Tool 1: PyTorch baseline efficiency benchmark
-├── run_benchmark_trt.py  # Tool 1b: TensorRT-LLM efficiency benchmark
-├── report.py             # Tool 3: charts + combined Markdown report
-└── README.md
 ```
 
 ---
@@ -123,28 +90,35 @@ benchmark/
 
 ```
 results/
-├── efficient/
-│   ├── baseline/         # JSON outputs from run_benchmark.py
-│   └── trt/              # JSON outputs from run_benchmark_trt.py
-├── lmms_eval/            # lmms-eval output directory
-└── reports/              # generated .md reports and .png charts
+├── efficiency/
+│   ├── baseline/       # JSON from run_benchmark.py
+│   └── trt/            # JSON from run_benchmark_trt.py
+├── accuracy/
+│   ├── baseline/       # JSON from run_accuracy_baseline.py
+│   └── trt/            # JSON from run_accuracy_trt.py
+└── reports/            # .md reports and .png charts from report.py
 ```
 
 ---
 
-## metrics.py API
+## Metrics
 
-`metrics.py` provides efficiency measurement utilities only. Do not add accuracy logic here.
+### Efficiency
 
-| Symbol | Purpose |
+| Metric | Description |
 |---|---|
-| `LatencyTimer` | Records TTFT and total latency via `start()` / `mark_first_token()` / `stop()` |
-| `reset_vram_stats()` | Resets PyTorch peak memory counter before each inference |
-| `measure_static_vram_gb()` | Reads `memory_allocated()` after model load |
-| `measure_dynamic_vram_gb(static_vram_gb)` | Reads `max_memory_allocated()` minus static baseline |
-| `compute_decode_latency_per_token(...)` | `(total_ms - ttft_ms) / output_tokens` |
-| `aggregate(values)` | Returns `{mean, std, median, p95, min, max}` for a list of floats |
-| `summarize_results(per_sample)` | Calls `aggregate()` over all metric keys |
+| `ttft_ms` | Time to First Token (ms) — prefill cost |
+| `decode_latency_ms_per_tok` | Decode time per output token (ms/tok) |
+| `static_vram_gb` | GPU memory after model/engine load |
+| `dynamic_vram_gb` | Per-inference VRAM increment above static baseline |
+
+### Accuracy
+
+| Benchmark | Metric | Description |
+|---|---|---|
+| VQAv2 | `accuracy` (0–100%) | Soft-match against 10 human annotations |
+| POPE | `avg_accuracy`, `avg_f1` | Object hallucination across random/popular/adversarial splits |
+| MME | `total_score` | Perception (10 tasks) + Cognition (4 tasks) pair scoring |
 
 ---
 
