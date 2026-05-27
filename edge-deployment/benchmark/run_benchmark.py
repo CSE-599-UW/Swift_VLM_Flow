@@ -3,7 +3,7 @@ run_benchmark.py
 Main entry point for the VLM Baseline Benchmark.
 
 Workflow:
-  1. Load Qwen2-VL-2B model (fp16, PyTorch backend)
+  1. Load Qwen2-VL-2B model (bf16, PyTorch backend)
   2. Load VQAv2 samples via data_loader
   3. Warm up the model
   4. Run inference on each sample, recording per-sample metrics
@@ -48,40 +48,52 @@ def parse_args():
 # ── Model Loading ──────────────────────────────────────────────────────────────
 
 def load_model():
-    print("\n[Step 1/5] Loading model...")
     metrics.reset_vram_stats()
 
     t0 = time.perf_counter()
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         config.MODEL_PATH,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=config.DEVICE,
     )
     processor = AutoProcessor.from_pretrained(config.MODEL_PATH)
     load_time = time.perf_counter() - t0
 
-    model_vram = metrics.measure_vram_gb()
+    static_vram_gb = metrics.measure_static_vram_gb()
     model.eval()
 
     print(f"  Model         : {config.MODEL_NAME}")
     print(f"  Precision     : {config.PRECISION}")
     print(f"  Load time     : {load_time:.2f}s")
-    print(f"  Model VRAM    : {model_vram:.2f} GB")
+    print(f"  Static VRAM   : {static_vram_gb:.2f} GB")
 
-    return model, processor, model_vram
+    return model, processor, static_vram_gb
 
 
 # ── Single-sample Inference ────────────────────────────────────────────────────
 
-def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
+def run_single(model, processor, sample: dict, max_new_tokens: int, static_vram_gb: float) -> dict:
     """
     Run inference on one VQAv2 sample and return per-sample metrics.
 
+    Args:
+        static_vram_gb: Static VRAM baseline measured once after model load.
+                        Used to compute the per-inference dynamic VRAM increment.
+ 
     Returns:
         dict with keys: question_id, question, predicted_answer,
                         ground_truth_answers, ttft_ms, total_latency_ms,
-                        throughput_tok_per_sec, peak_vram_gb, output_tokens.
+                        throughput_tok_per_sec, dynamic_vram_gb, output_tokens.
+
+    # Returns:
+    #     dict with keys: question_id, question, predicted_answer,
+    #                     ground_truth_answers, ttft_ms, total_latency_ms,
+    #                     throughput_tok_per_sec, peak_vram_gb, output_tokens.
     """
+    # =================================================================================
+    # Part 1: Dataset input preprocess
+    # =================================================================================
+    # Add prompt template we set in config
     prompt = data_loader.format_prompt(sample["question"])
 
     messages = [
@@ -94,10 +106,14 @@ def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
         }
     ]
 
+    # messages -> pure text token
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+
+    # messages -> image_inputs tensor
     image_inputs, video_inputs = process_vision_info(messages)
+
     inputs = processor(
         text=[text],
         images=image_inputs,
@@ -106,10 +122,16 @@ def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
         return_tensors="pt",
     ).to(config.DEVICE)
 
-    input_len = inputs["input_ids"].shape[1]
+    input_len = inputs["input_ids"].shape[1]  # For cut out input from `full_out` later.
+
+
+    # =================================================================================
+    # Part 2: Timer and Measurement
+    # =================================================================================
 
     # ── TTFT measurement via token-by-token generation ─────────────────────────
     # We use greedy decoding one token at a time to capture TTFT precisely.
+    # do_sample=False, temperature=None、top_p=None、top_k=None ==> greedy decoding, excluding random sampling
     timer = metrics.LatencyTimer()
     metrics.reset_vram_stats()
 
@@ -132,7 +154,6 @@ def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
         full_out = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            min_new_tokens=20,
             do_sample=False,
             temperature=None,
             top_p=None,
@@ -141,8 +162,10 @@ def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
     timer.stop()
 
     output_tokens = full_out.shape[1] - input_len
-    peak_vram = metrics.measure_vram_gb()
-    throughput = metrics.compute_throughput(output_tokens, timer.total_latency_ms)
+    dynamic_vram = metrics.measure_dynamic_vram_gb(static_vram_gb)
+    decode_latency_per_tok = metrics.compute_decode_latency_per_token(
+        timer.total_latency_ms, timer.ttft_ms, output_tokens
+    )
 
     predicted_ids = full_out[0][input_len:]
     predicted_answer = processor.decode(predicted_ids, skip_special_tokens=True).strip()
@@ -154,38 +177,41 @@ def run_single(model, processor, sample: dict, max_new_tokens: int) -> dict:
         "ground_truth_answers":  sample["answers"],
         "ttft_ms":               round(timer.ttft_ms, 3),
         "total_latency_ms":      round(timer.total_latency_ms, 3),
-        "throughput_tok_per_sec":round(throughput, 3),
-        "peak_vram_gb":          round(peak_vram, 3),
+        "decode_latency_ms_per_tok":round(decode_latency_per_tok, 3),
+        "dynamic_vram_gb":       round(dynamic_vram, 3),
         "output_tokens":         output_tokens,
     }
 
 
 # ── Warmup ─────────────────────────────────────────────────────────────────────
 
-def warmup(model, processor, samples: list, num_warmup: int, max_new_tokens: int):
+def warmup(model, processor, samples: list, num_warmup: int, max_new_tokens: int,
+           static_vram_gb: float):
     print(f"\n[Step 3/5] Warming up ({num_warmup} runs)...")
     for i in range(min(num_warmup, len(samples))):
-        run_single(model, processor, samples[i], max_new_tokens)
-        print(f"  Warmup {i+1}/{num_warmup} done")
+        result = run_single(model, processor, samples[i], max_new_tokens, static_vram_gb)
+        print(
+            f"  Warmup {i+1}/{num_warmup} | "
+            f"Latency={result['total_latency_ms']:.1f}ms"
+        )
 
 
 # ── Main Benchmark Loop ────────────────────────────────────────────────────────
 
-def run_benchmark(model, processor, samples: list, max_new_tokens: int) -> list[dict]:
+def run_benchmark(model, processor, samples: list, max_new_tokens: int, static_vram_gb: float) -> list[dict]:
     print(f"\n[Step 4/5] Benchmarking {len(samples)} samples...")
     results = []
     errors = 0
 
     for i, sample in enumerate(samples):
         try:
-            result = run_single(model, processor, sample, max_new_tokens)
+            result = run_single(model, processor, sample, max_new_tokens, static_vram_gb)
             results.append(result)
             print(
                 f"  [{i+1:>3}/{len(samples)}] "
                 f"TTFT={result['ttft_ms']:.1f}ms | "
-                f"Latency={result['total_latency_ms']:.1f}ms | "
-                f"TP={result['throughput_tok_per_sec']:.1f}tok/s | "
-                f"VRAM={result['peak_vram_gb']:.2f}GB"
+                f"Dec={result['decode_latency_ms_per_tok']:.2f}ms/tok | "
+                f"dVRAM={result['dynamic_vram_gb']:.2f}GB"
             )
         except Exception as e:
             errors += 1
@@ -198,7 +224,7 @@ def run_benchmark(model, processor, samples: list, max_new_tokens: int) -> list[
 
 # ── Save Results ───────────────────────────────────────────────────────────────
 
-def save_results(per_sample: list, summary: dict, model_vram: float,
+def save_results(per_sample: list, summary: dict, static_vram_gb: float,
                  args, run_id: str) -> str:
     os.makedirs(config.RAW_DIR, exist_ok=True)
 
@@ -216,13 +242,13 @@ def save_results(per_sample: list, summary: dict, model_vram: float,
             "split":          config.VQAV2_SPLIT,
             "seed":           config.VQAV2_SEED,
         },
-        "model_vram_gb":  round(model_vram, 3),
+        "static_vram_gb": round(static_vram_gb, 3),
         "summary":        summary,
         "per_sample":     per_sample,
     }
 
     tag = f"_{args.output_tag}" if args.output_tag else ""
-    filename = f"{config.RAW_DIR}/baseline_{run_id}{tag}.json"
+    filename = f"{config.RAW_DIR}/baseline/{run_id}{tag}.json"
     with open(filename, "w") as f:
         json.dump(output, f, indent=2)
 
@@ -245,23 +271,24 @@ def main():
     print("=" * 65)
 
     # Step 1: Load model
-    model, processor, model_vram = load_model()
+    print("\n[Step 1/5] Loading model...")
+    model, processor, static_vram_gb = load_model()
 
     # Step 2: Load data
     print(f"\n[Step 2/5] Loading VQAv2 samples...")
     samples = data_loader.load_vqav2_samples(num_samples=args.num_samples)
 
     # Step 3: Warmup
-    warmup(model, processor, samples, args.warmup, args.max_new_tokens)
+    warmup(model, processor, samples, args.warmup, args.max_new_tokens, static_vram_gb)
 
     # Step 4: Benchmark
-    per_sample = run_benchmark(model, processor, samples, args.max_new_tokens)
+    per_sample = run_benchmark(model, processor, samples, args.max_new_tokens, static_vram_gb)
 
     # Step 5: Summarize + save + report
     print(f"\n[Step 5/5] Generating report...")
     summary = metrics.summarize_results(per_sample)
 
-    raw_path = save_results(per_sample, summary, model_vram, args, run_id)
+    raw_path = save_results(per_sample, summary, static_vram_gb, args, run_id)
 
     # Print summary to terminal
     print("\n" + "=" * 65)
@@ -271,12 +298,10 @@ def main():
     print(f"  {'-'*60}")
     for metric, stats in summary.items():
         print(f"  {metric:<30} {stats['mean']:>10.2f} {stats['std']:>10.2f} {stats['p95']:>10.2f}")
-    print(f"\n  Model VRAM (static) : {model_vram:.2f} GB")
+    # print(f"\n  Model VRAM (static) : {model_vram:.2f} GB")
+    print(f"\n  Static VRAM (model weights) : {static_vram_gb:.2f} GB")
     print("=" * 65)
 
-    # Generate markdown report + charts
-    # report_path = generate_report(raw_path)
-    # print(f"\n  Report saved → {report_path}")
     print("\nDone.")
 
 

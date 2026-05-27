@@ -9,12 +9,12 @@ import os
 # ── Paths ──────────────────────────────────────────────────────────────────────
 MODEL_PATH = "/workspace/models/Qwen2-VL-2B-Instruct"
 RESULTS_DIR = "/workspace/results"
-RAW_DIR = os.path.join(RESULTS_DIR, "raw")
+RAW_DIR = os.path.join(RESULTS_DIR, "efficient")
 REPORTS_DIR = os.path.join(RESULTS_DIR, "reports")
 
 # ── Model Settings ─────────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen2-VL-2B-Instruct"
-PRECISION = "fp16"
+PRECISION = "bf16"
 BACKEND = "pytorch"
 DEVICE = "cuda"
 
@@ -22,7 +22,7 @@ DEVICE = "cuda"
 NUM_WARMUP = 3           # Number of warmup runs before benchmarking
 NUM_SAMPLES = 50         # Number of VQAv2 samples to evaluate
 MAX_NEW_TOKENS = 50      # Maximum tokens to generate per sample
-MIN_NEW_TOKENS = 20
+# MIN_NEW_TOKENS = 20
 BATCH_SIZE = 1           # Batch size (keep 1 for latency measurement)
 
 # ── VQAv2 Dataset Settings ─────────────────────────────────────────────────────
@@ -34,10 +34,3 @@ VQAV2_SEED = 42                     # Random seed for reproducible sampling
 # Short QA format: single-turn, concise answer expected
 SYSTEM_PROMPT = None   # Qwen2-VL does not require a system prompt
 USER_PROMPT_TEMPLATE = "{question} Answer in a complete sentence."
-
-# ── Metrics to Record ─────────────────────────────────────────────────────────
-# TTFT  : Time to First Token (ms) — measures prefill latency
-# TL    : Total Latency (ms)       — full generation time
-# TP    : Throughput (tokens/sec)  — output tokens / total time
-# VRAM  : Peak GPU memory (GB)     — during inference
-METRICS = ["ttft_ms", "total_latency_ms", "throughput_tok_per_sec", "peak_vram_gb"]

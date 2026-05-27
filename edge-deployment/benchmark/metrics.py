@@ -5,8 +5,16 @@ Metric computation utilities for the VLM benchmark.
 Metrics computed per sample:
   - ttft_ms              : Time to First Token (milliseconds)
   - total_latency_ms     : Total generation time (milliseconds)
-  - throughput_tok_per_sec: Output tokens / total generation time
-  - peak_vram_gb         : Peak GPU memory allocated during inference (GB)
+  - decode_latency_ms_per_tok: Decode-phase time per output token (ms/tok)
+                           = (total_latency_ms - ttft_ms) / output_tokens
+  - dynamic_vram_gb      : Per-inference VRAM increment (GB)
+                           = peak during inference − static baseline
+                           Measured by resetting peak stats just before each
+                           generate() call and reading max_memory_allocated()
+                           after. Reflects KV-cache + activation overhead only.
+  - static_vram_gb       : VRAM occupied after model weights are loaded,
+                           before any inference begins. Determines whether the
+                           model fits on the target device.
 
 Aggregate statistics computed across all samples:
   - mean, std, median (p50), p95
@@ -67,30 +75,85 @@ class LatencyTimer:
         return (self._t_end - self._t_start) * 1000
 
 
-def measure_vram_gb() -> float:
-    """Return peak GPU memory allocated since last reset, in GB."""
-    return torch.cuda.max_memory_allocated() / (1024 ** 3)
-
+# =================================================================================
+# Measure VRAM
+# =================================================================================
+def _bytes_to_gb(n: int) -> float:
+    return n / (1024 ** 3)
 
 def reset_vram_stats():
     """Reset the peak memory tracking counter."""
     torch.cuda.reset_peak_memory_stats()
 
-
-def compute_throughput(num_output_tokens: int, total_latency_ms: float) -> float:
+# Static VRAM
+def measure_static_vram_gb() -> float:
     """
-    Compute throughput in tokens per second.
+    Capture static VRAM: the memory currently allocated by PyTorch (i.e. model
+    weights sitting in VRAM).  Call this once after model.eval() and before any
+    inference begins.
+ 
+    Uses memory_allocated() rather than max_memory_allocated() so the reading
+    is not inflated by any earlier peak (e.g. the transient spike during weight
+    loading).
+    """
+    torch.cuda.synchronize()
+    return _bytes_to_gb(torch.cuda.memory_allocated())
 
+# Dynamic VRAM
+def measure_dynamic_vram_gb(static_vram_gb: float) -> float:
+    """
+    Capture the per-inference VRAM increment: how much extra memory was
+    allocated on top of the static baseline during a single generate() call.
+    This reflects KV-cache growth plus intermediate activation buffers.
+ 
     Args:
-        num_output_tokens : Number of newly generated tokens.
-        total_latency_ms  : Total generation time in milliseconds.
-
+        static_vram_gb: The static baseline measured once after model load
+                        (from measure_static_vram_gb()).
+ 
     Returns:
-        Throughput in tokens/sec. Returns 0.0 if latency is zero.
+        Dynamic VRAM increment in GB (≥ 0).  Clamped to 0 in the unlikely
+        event that the peak reading falls below the static baseline due to
+        rounding.
     """
-    if total_latency_ms <= 0:
+    torch.cuda.synchronize()
+    peak_gb = _bytes_to_gb(torch.cuda.max_memory_allocated())
+    return max(0.0, peak_gb - static_vram_gb)
+
+
+
+# =================================================================================
+
+def compute_decode_latency_per_token(
+    total_latency_ms: float,
+    ttft_ms: float,
+    num_output_tokens: int,
+) -> float:
+    """
+    Compute per-token decode latency in milliseconds.
+ 
+    Decode time is isolated by subtracting TTFT (prefill) from total latency,
+    then divided by the number of output tokens:
+ 
+        decode_latency_ms_per_tok = (total_latency_ms - ttft_ms) / output_tokens
+ 
+    TTFT comes from the first generate() call (max_new_tokens=1, pure prefill).
+    Total latency comes from the second generate() call (full decode).
+    Because both calls use identical inputs, their prefill times are equivalent,
+    so the subtraction correctly isolates the decode phase of the full run.
+ 
+    Args:
+        total_latency_ms  : Total generation time of the full generate() call (ms).
+        ttft_ms           : Time-to-first-token from the single-token generate() call (ms).
+        num_output_tokens : Number of newly generated tokens in the full run.
+ 
+    Returns:
+        Decode latency per token in ms/tok. Returns 0.0 if output_tokens is 0.
+    """
+    if num_output_tokens <= 0:
         return 0.0
-    return num_output_tokens / (total_latency_ms / 1000)
+    decode_ms = max(0.0, total_latency_ms - ttft_ms)
+    
+    return decode_ms / num_output_tokens
 
 
 # ── Aggregate Statistics ───────────────────────────────────────────────────────
@@ -131,9 +194,8 @@ def summarize_results(per_sample: list[dict[str, Any]]) -> dict[str, Any]:
     """
     metric_keys = [
         "ttft_ms",
-        "total_latency_ms",
-        "throughput_tok_per_sec",
-        "peak_vram_gb",
+        "decode_latency_ms_per_tok",
+        "dynamic_vram_gb",
         "output_tokens",
     ]
 
