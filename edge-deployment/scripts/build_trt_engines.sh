@@ -328,10 +328,14 @@ echo "================================================="
 mkdir -p /workspace/test_assets
 
 python3 - <<'EOF'
-from PIL import Image
-img = Image.new("RGB", (224, 224), color=(100, 149, 237))
-img.save("/workspace/test_assets/sample.jpg")
-print("✓ Test image created: /workspace/test_assets/sample.jpg")
+from datasets import load_dataset
+
+ds = load_dataset("HuggingFaceM4/VQAv2", split="validation", streaming=True)
+sample = next(iter(ds))
+
+sample["image"].save("/workspace/test_assets/sample.jpg")
+print("Q:", sample["question"])
+print("A:", sample["answers"])
 EOF
 
 python3 "$TRTLLM_ROOT/examples/models/core/multimodal/run.py" \
