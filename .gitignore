@@ -7,6 +7,8 @@
 # Raw benchmark results (large, reproducible)
 **/results/raw/
 **/results/lmms_eval/
+**/results/efficiency/
+**/results/accuracy/
 
 # Python
 __pycache__/
