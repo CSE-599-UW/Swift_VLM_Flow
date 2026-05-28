@@ -44,10 +44,10 @@ def parse_args():
     parser.add_argument("--output_tag", type=str, default=None,
                         help="Optional tag appended to output filenames")
     parser.add_argument("--engine_dir", type=str,
-                        default="/workspace/trt_engines/qwen2vl",
+                        default="/workspace/trt_engines/qwen2vl_2b_bf16",
                         help="Path to TRT engine directory (must contain llm/ and vision/)")
     parser.add_argument("--precision", type=str, default="bf16",
-                        choices=["fp16", "fp8", "bf16"],
+                        choices=["int8", "int4", "fp8", "bf16"],
                         help="Engine precision label for reporting")
     return parser.parse_args()
 
@@ -189,7 +189,7 @@ def run_single_trt(model, sample: dict, max_new_tokens: int,
     # Estimate output token count from decoded string
     output_tokens = len(model.tokenizer.encode(
         predicted_answer, add_special_tokens=False,
-        allowed_special=set(),
+        # allowed_special=set(),
     )) + 1
 
     # Dynamic VRAM: current total usage minus static baseline
@@ -297,7 +297,7 @@ def main():
     print(f" Model    : {config.MODEL_NAME} ({args.precision})")
     print(f" Backend  : TensorRT-LLM")
     print(f" Engine   : {args.engine_dir}")
-    print(f" Samples  : {args.num_samples} (VQAv2 {config.VQAV2_SPLIT})")
+    print(f" Samples  : {args.num_samples} ")
     print(f" Run ID   : {run_id}")
     print("=" * 65)
 
@@ -306,8 +306,9 @@ def main():
     model, static_vram_gb = load_trt_model(args.engine_dir, args.max_new_tokens)
 
     # Step 2: Load data (same seed as baseline for fair comparison)
-    print(f"\n[Step 2/5] Loading VQAv2 samples...")
-    samples = data_loader.load_vqav2_samples(num_samples=args.num_samples)
+    print(f"\n[Step 2/5] Loading samples...")
+    # samples = data_loader.load_vqav2_samples(num_samples=args.num_samples)
+    samples = data_loader.load_llava_bench_samples(num_samples=args.num_samples)
 
     # Step 3: Warmup
     warmup(model, samples, args.warmup, args.max_new_tokens, static_vram_gb)

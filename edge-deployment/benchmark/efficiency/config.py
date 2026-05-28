@@ -22,13 +22,12 @@ DEVICE = "cuda"
 NUM_WARMUP = 3           # Number of warmup runs before benchmarking
 NUM_SAMPLES = 50         # Number of VQAv2 samples to evaluate
 MAX_NEW_TOKENS = 50      # Maximum tokens to generate per sample
-# MIN_NEW_TOKENS = 20
 BATCH_SIZE = 1           # Batch size (keep 1 for latency measurement)
 
 # ── VQAv2 Dataset Settings ─────────────────────────────────────────────────────
 VQAV2_DATASET = "lmms-lab/VQAv2"   # HuggingFace dataset identifier
 VQAV2_SPLIT = "validation"          # Dataset split to use
-VQAV2_SEED = 42                     # Random seed for reproducible sampling
+SAMPLE_SEED = 42                     # Random seed for reproducible sampling
 
 # ── Prompt Template ────────────────────────────────────────────────────────────
 # Short QA format: single-turn, concise answer expected

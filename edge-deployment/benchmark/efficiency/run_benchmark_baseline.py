@@ -276,7 +276,8 @@ def main():
 
     # Step 2: Load data
     print(f"\n[Step 2/5] Loading VQAv2 samples...")
-    samples = data_loader.load_vqav2_samples(num_samples=args.num_samples)
+    # samples = data_loader.load_vqav2_samples(num_samples=args.num_samples)
+    samples = data_loader.load_llava_bench_samples(num_samples=args.num_samples)
 
     # Step 3: Warmup
     warmup(model, processor, samples, args.warmup, args.max_new_tokens, static_vram_gb)

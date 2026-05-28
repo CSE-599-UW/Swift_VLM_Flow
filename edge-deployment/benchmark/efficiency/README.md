@@ -1,30 +1,25 @@
 # Efficiency Benchmark — Swift-VLM-Flow
 
 Self-contained efficiency benchmark for Qwen2-VL-2B-Instruct.
-Measures **latency**, **VRAM**, and **throughput** for both the HuggingFace PyTorch
-baseline and the TensorRT-LLM engine, on the same VQAv2 samples.
+Measures **Speed**, **Memory usage** for both the HuggingFace PyTorch
+baseline and the TensorRT-LLM engine, on the same LLaVA-Bench (In-the-Wild) samples.
 
-Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
 
 ---
 
 ## Quick Start
 
 ```bash
-# Run both baseline + TRT in sequence (recommended)
-bash run_benchmarks.sh
+# Run baseline + all TRT precisions in sequence (recommended)
+bash run_efficiency_all.sh
 
-# Baseline only (no TRT engine)
-bash run_benchmarks.sh --skip_trt
-
-# TRT only (baseline already done)
-bash run_benchmarks.sh --skip_baseline --engine_dir /workspace/trt_engines/qwen2vl_v2
-
-# Custom sample count and output tag
-bash run_benchmarks.sh --num_samples 100 --output_tag v2_run
+# Custom sample count / warmup / token budget
+bash run_efficiency_all.sh --num_samples 28 --warmup 3 --max_new_tokens 256
 ```
 
-Results are written to `/workspace/results/efficiency/baseline/` and `/workspace/results/efficiency/trt/`.
+Results are written to 
+- `/workspace/results/efficiency/baseline/`
+- `/workspace/results/efficiency/trt/`
 
 ---
 
@@ -33,9 +28,9 @@ Results are written to `/workspace/results/efficiency/baseline/` and `/workspace
 ### PyTorch Baseline
 
 ```bash
-python3 run_benchmark.py
-python3 run_benchmark.py --num_samples 50 --warmup 3 --max_new_tokens 50
-python3 run_benchmark.py --output_tag bf16_v1
+python3 run_benchmark_baseline.py
+python3 run_benchmark_baseline.py --num_samples 50 --warmup 3 --max_new_tokens 256
+python3 run_benchmark_baseline.py --output_tag bf16_v1
 ```
 
 Loads Qwen2-VL-2B-Instruct in **bf16** via HuggingFace Transformers.
@@ -46,28 +41,54 @@ Saves to: `results/efficiency/baseline/<run_id>[_<tag>].json`
 ```bash
 python3 run_benchmark_trt.py
 python3 run_benchmark_trt.py \
-    --engine_dir /workspace/trt_engines/qwen2vl_v2 \
-    --precision bf16 \
-    --output_tag bf16_v1
+    --engine_dir /workspace/trt_engines/qwen2vl_2b_fp8 \
+    --precision fp8 \
+    --output_tag fp8_v1
 ```
 
-Requires a pre-built TRT engine with `llm/` and `vision/` subdirectories.
-Saves to: `results/efficiency/trt/<run_id>[_<tag>].json`
+Requires a pre-built TRT engine at the given `--engine_dir`.
+VRAM is measured via `nvidia-smi` (TRT-LLM allocates outside PyTorch's allocator).
+Saves to: `results/efficiency/trt/<precision>_<run_id>[_<tag>].json`
 
 ---
 
-## run_benchmarks.sh — Flag Reference
+## `run_efficiency_all.sh` — Flag Reference
 
 | Flag | Default | Description |
 |---|---|---|
-| `--num_samples N` | 50 | VQAv2 samples to evaluate |
+| `--num_samples N` | 50 | LLaVA-Bench samples to evaluate |
 | `--warmup W` | 3 | Warmup inference runs (discarded) |
-| `--max_new_tokens T` | 50 | Max tokens generated per sample |
-| `--output_tag TAG` | — | Append a tag string to output filenames |
-| `--engine_dir DIR` | `/workspace/trt_engines/qwen2vl_v2` | TRT engine directory |
-| `--precision PREC` | `bf16` | TRT precision label (`bf16`, `fp16`, `fp8`) |
-| `--skip_baseline` | — | Skip PyTorch baseline run |
-| `--skip_trt` | — | Skip TensorRT run |
+| `--max_new_tokens T` | 256 | Max tokens generated per sample |
+
+The script runs the PyTorch baseline first, then iterates over all TRT precision
+variants in order: **bf16 → fp8 → int8 → int4 → int4_awq**.
+Each TRT run is skipped automatically if its engine directory does not exist.
+
+Engine directories expected under `/workspace/trt_engines/`:
+
+| Precision | Engine Dir |
+|---|---|
+| `bf16` | `qwen2vl_2b_bf16` |
+| `fp8` | `qwen2vl_2b_fp8` |
+| `int8` | `qwen2vl_2b_int8` |
+| `int4` | `qwen2vl_2b_int4` |
+| `int4_awq` | `qwen2vl_2b_int4_awq` |
+
+---
+
+## Dataset
+
+Both runners use **LLaVA-Bench (In-the-Wild)** (`lmms-lab/llava-bench-in-the-wild`),
+a 60-sample open-ended visual-question benchmark with three categories:
+
+| Category | ~Samples | Output Length | Use |
+|---|---|---|---|
+| `complex` | 20 | 150–200 tokens | Best for decode latency |
+| `detail` | 20 | 100–150 tokens | Medium output |
+| `conv` | 20 | 50–100 tokens | Short output |
+| `all` | 60 | mixed | Default |
+
+To use a specific category, edit `data_loader.load_llava_bench_samples(category=...)` in the runner scripts.
 
 ---
 
@@ -75,20 +96,20 @@ Saves to: `results/efficiency/trt/<run_id>[_<tag>].json`
 
 ```
 1. Load model          →  measure static_vram_gb  (weights in VRAM)
-2. Load VQAv2 samples  →  stream N samples from HuggingFace (seed=42, reproducible)
+2. Load LLaVA-Bench    →  first N samples from the dataset (category='all')
 3. Warmup              →  run W inferences, discard results (warms GPU caches)
 4. Benchmark loop      →  for each sample:
      a. reset_peak_memory_stats()
      b. generate(max_new_tokens=1)   →  measure TTFT
-     c. generate(max_new_tokens=50)  →  measure total_latency_ms
-     d. read max_memory_allocated()  →  compute dynamic_vram_gb
+     c. generate(max_new_tokens=256) →  measure total_latency_ms
+     d. read peak memory             →  compute dynamic_vram_gb
 5. Aggregate           →  mean / std / median / p95 across all samples
 6. Save JSON           →  results/efficiency/{baseline,trt}/<run_id>.json
 ```
 
 > **Why two generate() calls?**
 > TTFT (prefill cost) is isolated by running `max_new_tokens=1` first and recording
-> when that token appears. The full decode run (`max_new_tokens=50`) then gives total
+> when that token appears. The full decode run (`max_new_tokens=256`) then gives total
 > latency. Since both calls use identical inputs their prefill times are equivalent,
 > so `decode_latency = total_latency − TTFT` correctly isolates the decode phase.
 
@@ -99,7 +120,6 @@ Saves to: `results/efficiency/trt/<run_id>[_<tag>].json`
 | Metric | Unit | Description |
 |---|---|---|
 | `ttft_ms` | ms | Time to First Token — prefill (vision encoder + LLM prompt processing) |
-| `total_latency_ms` | ms | Wall-clock time from input to last generated token |
 | `decode_latency_ms_per_tok` | ms/tok | `(total_latency_ms − ttft_ms) / output_tokens` |
 | `static_vram_gb` | GB | VRAM after model weights load, before any inference |
 | `dynamic_vram_gb` | GB | Per-inference peak VRAM above static baseline (KV-cache + activations) |
@@ -121,9 +141,9 @@ Aggregate statistics per metric: **mean, std, median, p95, min, max**.
     "backend":        "pytorch",
     "num_samples":    50,
     "num_warmup":     3,
-    "max_new_tokens": 50,
-    "dataset":        "lmms-lab/VQAv2",
-    "split":          "validation",
+    "max_new_tokens": 256,
+    "dataset":        "lmms-lab/llava-bench-in-the-wild",
+    "split":          "train",
     "seed":           42
   },
   "static_vram_gb": 4.123,
@@ -138,7 +158,7 @@ Aggregate statistics per metric: **mean, std, median, p95, min, max**.
       "question_id": 123456,
       "question": "What color is the car?",
       "predicted_answer": "The car is red.",
-      "ground_truth_answers": ["red", "red", "red"],
+      "ground_truth_answers": ["The car is red."],
       "ttft_ms": 310.2,
       "total_latency_ms": 598.4,
       "decode_latency_ms_per_tok": 21.8,
@@ -149,8 +169,11 @@ Aggregate statistics per metric: **mean, std, median, p95, min, max**.
 }
 ```
 
-Both `run_benchmark.py` (baseline) and `run_benchmark_trt.py` (TRT) write this
-same schema so results can be fed directly to `../report.py` for comparison charts.
+TRT runs add `"engine_dir"` to the `config` block and prefix the filename with the
+precision label: `<precision>_<run_id>[_<tag>].json`.
+
+Both runners write the same schema so results can be fed directly to `../report.py`
+for comparison charts.
 
 ---
 
@@ -158,12 +181,12 @@ same schema so results can be fed directly to `../report.py` for comparison char
 
 ```
 efficiency/
-├── config.py             # paths, model settings, benchmark hyperparameters
-├── data_loader.py        # VQAv2 streaming loader (HuggingFace, seed=42)
-├── metrics.py            # LatencyTimer, VRAM measurement, aggregate statistics
-├── run_benchmark.py      # PyTorch baseline runner
-├── run_benchmark_trt.py  # TensorRT-LLM runner
-├── run_benchmarks.sh     # orchestrator: runs both and reports exit codes
+├── config.py                 # paths, model settings, benchmark hyperparameters
+├── data_loader.py            # LLaVA-Bench loader (HuggingFace, seed=42)
+├── metrics.py                # LatencyTimer, VRAM measurement, aggregate statistics
+├── run_benchmark_baseline.py # PyTorch baseline runner
+├── run_benchmark_trt.py      # TensorRT-LLM runner
+├── run_efficiency_all.sh     # orchestrator: baseline + all TRT precisions
 └── README.md
 ```
 
@@ -173,7 +196,7 @@ efficiency/
 
 ```
 results/efficiency/
-├── baseline/    # JSON outputs from run_benchmark.py
+├── baseline/    # JSON outputs from run_benchmark_baseline.py
 └── trt/         # JSON outputs from run_benchmark_trt.py
 ```
 
@@ -182,7 +205,7 @@ Pass these JSONs to `../report.py` to generate comparison charts and a Markdown 
 ```bash
 python3 ../report.py \
     --efficiency results/efficiency/baseline/<id>.json \
-    --trt        results/efficiency/trt/<id>.json \
+    --trt        results/efficiency/trt/<precision>_<id>.json \
     --output_tag official_v1
 ```
 
