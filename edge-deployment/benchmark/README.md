@@ -11,24 +11,24 @@ Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
 
 ```
 efficiency/
-  run_benchmarks.sh       →  Tool 1 + 1b: latency & VRAM
-      ├── run_benchmark.py          (PyTorch baseline)
-      └── run_benchmark_trt.py      (TensorRT-LLM)
-                                        ↓
-                              results/efficiency/baseline/<id>.json
-                              results/efficiency/trt/<precision>_<id>.json
+  run_efficiency_all.sh   →  latency & VRAM (baseline + all TRT precisions)
+      ├── run_benchmark_baseline.py  (PyTorch bf16)
+      └── run_benchmark_trt.py       (TensorRT-LLM: bf16/fp8/int8/int4/int4_awq)
+                                         ↓
+                               results/efficiency/baseline/<id>.json
+                               results/efficiency/trt/<precision>_<id>.json
 
 accuracy/
-  run_accuracy_all.sh     →  Tool 2: VQAv2 / POPE / MME scoring
+  run_accuracy_all.sh     →  VQAv2 / POPE / MME scoring
       ├── run_accuracy_baseline.py  (HF Transformers)
       └── run_accuracy_trt.py       (TensorRT-LLM)
-                                        ↓
-                              results/accuracy/baseline/<id>.json
-                              results/accuracy/trt/<precision>_<id>.json
+                                         ↓
+                               results/accuracy/baseline/<id>.json
+                               results/accuracy/trt/<precision>_<id>.json
 
-report.py                 →  Tool 3: charts + Markdown report
-                                        ↓
-                              results/reports/report_<id>.md  +  *.png
+report.py                 →  charts + Markdown report
+                                         ↓
+                               results/reports/report_<id>.md  +  *.png
 ```
 
 ---
@@ -37,7 +37,7 @@ report.py                 →  Tool 3: charts + Markdown report
 
 | Directory | What it measures | Entry point |
 |---|---|---|
-| [efficiency/](efficiency/README.md) | Latency (TTFT, decode ms/tok), VRAM — PyTorch and TRT | `efficiency/run_benchmarks.sh` |
+| [efficiency/](efficiency/README.md) | Latency (TTFT, decode ms/tok), VRAM — PyTorch and TRT | `efficiency/run_efficiency_all.sh` |
 | [accuracy/](accuracy/README.md) | VQAv2 accuracy, POPE hallucination, MME perception/cognition — PyTorch and TRT | `accuracy/run_accuracy_all.sh` |
 
 ---
@@ -48,16 +48,13 @@ report.py                 →  Tool 3: charts + Markdown report
 
 ```bash
 cd benchmark/efficiency
-bash run_benchmarks.sh --output_tag official_v1
+bash run_efficiency_all.sh
 
-# PyTorch only
-bash run_benchmarks.sh --skip_trt --output_tag baseline
-
-# TRT only
-bash run_benchmarks.sh --skip_baseline --precision bf16 --output_tag trt_bf16
+# Custom sample count / warmup / token budget
+bash run_efficiency_all.sh --num_samples 28 --warmup 3 --max_new_tokens 256
 ```
 
-→ See [efficiency/README.md](efficiency/README.md) for the full flag reference.
+→ See [efficiency/README.md](efficiency/README.md) for the full flag reference and engine directory layout.
 
 ### Accuracy
 
@@ -73,15 +70,8 @@ bash run_accuracy_all.sh --skip-trt             # HF baseline only
 ### Report
 
 ```bash
-# Efficiency only
-python3 report.py --efficiency results/efficiency/baseline/<id>.json
-
 # Full comparison (baseline + TRT + accuracy)
-python3 report.py \
-    --efficiency results/efficiency/baseline/<id>.json \
-    --trt        results/efficiency/trt/<precision>_<id>.json \
-    --lmms       results/accuracy/baseline/<id>.json \
-    --output_tag official_v1
+python3 report.py 
 ```
 
 ---
@@ -91,7 +81,7 @@ python3 report.py \
 ```
 results/
 ├── efficiency/
-│   ├── baseline/       # JSON from run_benchmark.py
+│   ├── baseline/       # JSON from run_benchmark_baseline.py
 │   └── trt/            # JSON from run_benchmark_trt.py
 ├── accuracy/
 │   ├── baseline/       # JSON from run_accuracy_baseline.py
