@@ -25,7 +25,7 @@
 #   --engine-dir PATH      TRT engine directory
 #   --tasks "vqa pope mme" Which tasks to run (space-separated, quoted)
 #   --vqa-samples N        VQAv2 sample count  [default: 500]
-#   --pope-samples N       POPE samples/split  [default: 300]
+#   --pope-samples N       POPE samples/split  [default: 500]
 #   --quick                Sets vqa=20, pope=30, mme=50 for a fast smoke-test
 #   --output-tag TAG       Append tag to output filenames
 # =============================================================================
@@ -35,11 +35,11 @@ set -euo pipefail
 # ── Defaults ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_DIR="/workspace/results/accuracy"
-ENGINE_DIR="/workspace/trt_engines/qwen2vl"
+ENGINE_DIR="/workspace/trt_engines/qwen2vl_2b_bf16"
 PRECISION="bf16"
 TASKS="vqa pope mme"
 VQA_SAMPLES=500
-POPE_SAMPLES=300
+POPE_SAMPLES=500
 MME_SAMPLES=""          # empty = full dataset
 SKIP_BASELINE=false
 SKIP_TRT=false

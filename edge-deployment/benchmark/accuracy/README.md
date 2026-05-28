@@ -137,7 +137,7 @@ Both `run_accuracy_baseline.py` and `run_accuracy_trt.py` write the same schema:
   "config": {
     "model":          "Qwen2-VL-2B-Instruct",
     "vqa_samples":    500,
-    "pope_samples":   300,
+    "pope_samples":   500,
     "mme_samples":    null,
     "max_new_tokens": 50
   },
