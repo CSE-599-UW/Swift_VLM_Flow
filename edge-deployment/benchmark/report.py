@@ -1,782 +1,599 @@
+#!/usr/bin/env python3
 """
-report.py
-Generates efficiency + accuracy charts and a combined Markdown report
-for the Swift-VLM-Flow benchmark pipeline.
-
+report.py  –  VLM Quantization Benchmark Report Generator
 Usage:
-    # Efficiency only (lmms-eval not yet run)
-    python3 report.py --efficiency results/raw/baseline_<id>.json
+    python report.py <json1> [json2 ...] --output-dir ./output
 
-    # Full combined report
-    python3 report.py \\
-        --efficiency results/raw/baseline_<id>.json \\
-        --lmms       results/lmms_eval/.../results.json
-
-    # Multi-backend comparison
-    python3 report.py \\
-        --efficiency results/raw/baseline_<id>.json \\
-        --trt        results/raw/trt_<id>.json [results/raw/trt_fp8_<id>.json ...] \\
-        --lmms       results/lmms_eval/.../results.json \\
-        --output_tag official_v1
-
-Inputs
-------
-Efficiency JSON (from run_benchmark.py):
-    {
-      "run_id":         str,
-      "timestamp":      str,
-      "config":         { model, precision, backend, num_samples, num_warmup,
-                          max_new_tokens, min_new_tokens, dataset, split, seed },
-      "static_vram_gb": float,
-      "summary": {
-        "ttft_ms":                   { mean, std, median, p95, min, max },
-        "decode_latency_ms_per_tok": { mean, std, median, p95, min, max },
-        "dynamic_vram_gb":           { mean, std, median, p95, min, max },
-        "output_tokens":             { mean, std, median, p95, min, max },
-      },
-      "per_sample": [ { question_id, question, predicted_answer,
-                        ground_truth_answers, ttft_ms, total_latency_ms,
-                        decode_latency_ms_per_tok, dynamic_vram_gb,
-                        output_tokens }, ... ]
-    }
-
-lmms-eval JSON:  standard lmms-eval results format.
-    Supported tasks: vqav2_val, pope, mme (others silently ignored).
-
-Outputs (saved to config.REPORTS_DIR)
---------------------------------------
-    report_<run_id>[_<tag>].md
-    latency_dist_<run_id>.png
-    vram_breakdown_<run_id>.png
-    per_sample_latency_<run_id>.png
-    comparison_<run_id>.png          (only when ≥2 efficiency runs or lmms present)
+Accepts any mix of efficiency JSONs (with 'summary'/'per_sample' keys)
+and accuracy JSONs (with 'results' key containing vqa/pope/mme).
+Generates:
+    output/img/         – all figures
+    output/report.md    – markdown report with embedded images
 """
 
-import argparse
 import json
 import os
-import glob
-from datetime import datetime
-import zoneinfo
+import sys
+import argparse
+import datetime
+from pathlib import Path
+from collections import defaultdict
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 
-import config
+# ────────────────────────────── global config ──────────────────────────────
+OUTPUT_DIR = Path("../results/reports")
+
+# 6 tiers × (efficiency + accuracy) = 12 JSONs for a full official run
+INPUT_JSONS = [
+    "../results/efficiency/baseline/20260528_085407_bf16_v1.json",
+    "../results/efficiency/trt/bf16_20260528_085459_bf16_v1.json",
+    "../results/efficiency/trt/fp8_20260528_085545_fp8_v1.json",
+    "../results/efficiency/trt/int8_20260528_085621_int8_v1.json",
+    "../results/efficiency/trt/int4_20260528_085659_int4_v1.json",
+    # "../results/efficiency/trt_int_awq_efficiency.json",
+    "../results/accuracy/baseline/bf16_20260528_042224.json",
+    "../results/accuracy/trt/bf16_20260528_044749.json",
+    "../results/accuracy/trt/fp8_20260528_071102.json",
+    # "../results/accuracy/trt_int8_accuracy.json",
+    # "../results/accuracy/trt_int4_accuracy.json",
+    "../results/accuracy/trt/int4_20260528_063759.json", # awq
+]
+
+# ────────────────────────────── colour scheme ──────────────────────────────
+# Canonical display order
+TIER_ORDER = ["pytorch-bf16", "trt-bf16", "trt-fp8", "trt-int8", "trt-int4", "trt-int_awq"]
+
+TIER_COLORS = {
+    "pytorch-bf16": "#5F5E5A",   # gray  – baseline
+    "trt-bf16":     "#185FA5",   # blue
+    "trt-fp8":      "#0F6E56",   # teal
+    "trt-int8":     "#BA7517",   # amber
+    "trt-int4":     "#993C1D",   # coral
+    "trt-int_awq":  "#533AB7",   # purple
+}
+
+TIER_LABELS = {
+    "pytorch-bf16": "PyTorch BF16",
+    "trt-bf16":     "TRT BF16",
+    "trt-fp8":      "TRT FP8",
+    "trt-int8":     "TRT INT8",
+    "trt-int4":     "TRT INT4",
+    "trt-int_awq":  "TRT INT-AWQ",
+}
+
+# ────────────────────────────── helpers ────────────────────────────────────
+def tier_key(config: dict) -> str:
+    """Derive a canonical tier string from a run config."""
+    backend = config.get("backend", "").lower()
+    precision = config.get("precision", "").lower()
+
+    if "pytorch" in backend or "huggingface" in backend:
+        prec = precision if precision else "bf16"
+        return f"pytorch-{prec}"
+    if "tensorrt" in backend or "trt" in backend:
+        # backend might be  'tensorrt-llm-fp8'  or precision field
+        prec = precision if precision else ""
+        if not prec:
+            for p in ["bf16", "fp8", "int8", "int4", "int_awq", "fp16"]:
+                if p in backend:
+                    prec = p
+                    break
+        if not prec:
+            prec = "bf16"
+        return f"trt-{prec}"
+    # fallback
+    return f"{backend}-{precision}" if precision else backend
 
 
-# ── Compatibility shim ─────────────────────────────────────────────────────────
+def sorted_tiers(tiers):
+    """Return tiers in canonical display order, unknowns appended."""
+    known = [t for t in TIER_ORDER if t in tiers]
+    unknown = sorted([t for t in tiers if t not in TIER_ORDER])
+    return known + unknown
 
-def _compat_load(data: dict) -> dict:
+
+def tier_label(t):
+    return TIER_LABELS.get(t, t)
+
+
+def tier_color(t):
+    return TIER_COLORS.get(t, "#888780")
+
+
+def savefig(fig, path):
+    fig.savefig(path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+
+
+# ────────────────────────────── data loading ───────────────────────────────
+def load_runs(json_paths):
     """
-    Normalise legacy JSON (produced before experiment_pipeline_design.md was
-    finalised) to the current schema.
-
-    Legacy keys handled:
-      model_vram_gb          → static_vram_gb
-      summary.peak_vram_gb   → summary.dynamic_vram_gb
-      summary.throughput_tok_per_sec → summary.decode_latency_ms_per_tok  (approx)
+    Returns two dicts keyed by tier string:
+        eff_runs[tier]  = efficiency summary dict  (ttft, decode, vram, …)
+        acc_runs[tier]  = accuracy scores dict     (vqa, pope, mme)
     """
-    if "static_vram_gb" not in data:
-        data["static_vram_gb"] = data.get("model_vram_gb", 0.0)
+    eff_runs = {}
+    acc_runs = {}
 
-    s = data["summary"]
+    for path in json_paths:
+        with open(path) as f:
+            d = json.load(f)
 
-    if "dynamic_vram_gb" not in s:
-        s["dynamic_vram_gb"] = s.get("peak_vram_gb", {
-            "mean": 0, "std": 0, "median": 0, "p95": 0, "min": 0, "max": 0
-        })
-
-    if "decode_latency_ms_per_tok" not in s:
-        if "throughput_tok_per_sec" in s:
-            tp = s["throughput_tok_per_sec"]
-            def inv(v): return round(1000.0 / v, 3) if v and v > 0 else 0
-            s["decode_latency_ms_per_tok"] = {
-                "mean": inv(tp.get("mean", 0)), "std": 0,
-                "median": inv(tp.get("median", 0)),
-                "p95":  inv(tp.get("p95", 0)),
-                "min":  inv(tp.get("max", 0)),
-                "max":  inv(tp.get("min", 0)),
+        cfg = d.get("config", {})
+        # Determine type
+        if "summary" in d:          # efficiency JSON
+            tier = tier_key(cfg)
+            eff_runs[tier] = {
+                "ttft_mean":        d["summary"]["ttft_ms"]["mean"],
+                "ttft_std":         d["summary"]["ttft_ms"]["std"],
+                "ttft_p95":         d["summary"]["ttft_ms"]["p95"],
+                "decode_mean":      d["summary"]["decode_latency_ms_per_tok"]["mean"],
+                "decode_std":       d["summary"]["decode_latency_ms_per_tok"]["std"],
+                "decode_p95":       d["summary"]["decode_latency_ms_per_tok"]["p95"],
+                "static_vram_gb":   d.get("static_vram_gb", None),
+                "dynamic_mean_gb":  d["summary"]["dynamic_vram_gb"]["mean"],
+                "dynamic_std_gb":   d["summary"]["dynamic_vram_gb"]["std"],
+                "config":           cfg,
             }
-        else:
-            s["decode_latency_ms_per_tok"] = {
-                "mean": 0, "std": 0, "median": 0, "p95": 0, "min": 0, "max": 0
+        elif "results" in d:        # accuracy JSON
+            # accuracy JSONs may have backend at top level, not in config
+            merged_cfg = {**cfg}
+            if "backend" in d and "backend" not in merged_cfg:
+                merged_cfg["backend"] = d["backend"]
+            tier = tier_key(merged_cfg)
+            r = d["results"]
+            vqa   = r.get("vqa",  {}).get("scores", {})
+            # pope  = r.get("pope", {})
+            pope = r.get("pope", {}).get("scores", r.get("pope", {}))
+            mme   = r.get("mme",  {}).get("scores", {})
+            acc_runs[tier] = {
+                "vqa_acc":          vqa.get("accuracy"),
+                "pope_avg_f1":      pope.get("avg_f1"),
+                "pope_avg_acc":     pope.get("avg_accuracy"),
+                "mme_total":        mme.get("total_score"),
+                "mme_perception":   mme.get("perception_score"),
+                "mme_cognition":    mme.get("cognition_score"),
+                "config":           cfg,
             }
 
-    for sample in data.get("per_sample", []):
-        if "decode_latency_ms_per_tok" not in sample:
-            tok   = sample.get("output_tokens", 0) or 0
-            total = sample.get("total_latency_ms", 0) or 0
-            ttft  = sample.get("ttft_ms", 0) or 0
-            sample["decode_latency_ms_per_tok"] = (
-                round((total - ttft) / tok, 3) if tok > 0 else 0
-            )
-        if "dynamic_vram_gb" not in sample:
-            sample["dynamic_vram_gb"] = sample.get("peak_vram_gb", 0)
-
-    return data
+    return eff_runs, acc_runs
 
 
-# ── Loaders ────────────────────────────────────────────────────────────────────
-
-def _load_efficiency(path: str) -> dict:
-    with open(path) as f:
-        data = json.load(f)
-    for key in ("run_id", "summary", "config"):
-        if key not in data:
-            raise ValueError(f"Efficiency JSON missing key: '{key}' in {path}")
-    return _compat_load(data)
-
-
-def _load_lmms(path: str) -> dict | None:
-    """
-    Parse a lmms-eval results JSON.
-    Returns None if path is None; raises on malformed files.
-
-    Supported task prefixes: vqav2, pope, mme.
-    Unknown tasks are silently ignored.
-
-    Return schema:
-        {
-          "tasks": {
-            "vqav2": { task, score, stderr, n_samples, max_new_tokens, post_prompt } | None,
-            "pope":  { task, accuracy, f1, n_samples } | None,
-            "mme":   { task, perception, cognition, total, n_samples } | None,
-          },
-          "date": str,
-          "eval_time_seconds": float,
-          "lmms_eval_version": str,
-        }
-    """
-    if path is None:
+# ────────────────────────── figure generators ──────────────────────────────
+def fig_speed(eff_runs, img_dir):
+    """Grouped bar: TTFT + Decode Latency side by side."""
+    tiers = sorted_tiers(eff_runs.keys())
+    if not tiers:
         return None
 
-    with open(path) as f:
-        raw = json.load(f)
+    x = np.arange(len(tiers))
+    w = 0.35
 
-    results = raw.get("results", {})
-    configs = raw.get("configs", {})
-    n_samp  = raw.get("n-samples", {})
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig.subplots_adjust(wspace=0.35)
 
-    out = {
-        "tasks": {"vqav2": None, "pope": None, "mme": None},
-        "date": raw.get("date", "unknown"),
-        "eval_time_seconds": float(raw.get("total_evaluation_time_seconds", 0)),
-        "lmms_eval_version": raw.get("lmms_eval_version", "unknown"),
-    }
+    for ax, metric, ylabel, title in [
+        (axes[0], "ttft_mean",   "ms",             "TTFT (Prefill Latency)"),
+        (axes[1], "decode_mean", "ms / token",      "Decode Latency per Token"),
+    ]:
+        std_key = metric.replace("mean", "std")
+        vals = [eff_runs[t][metric] for t in tiers]
+        errs = [eff_runs[t][std_key] for t in tiers]
+        colors = [tier_color(t) for t in tiers]
 
-    for task_key, task_res in results.items():
-        tk = task_key.lower()
-        cfg_t = configs.get(task_key, {})
+        bars = ax.bar(x, vals, width=0.6, color=colors, yerr=errs,
+                      error_kw={"ecolor": "#3d3d3a", "capsize": 4, "linewidth": 1},
+                      zorder=3)
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier_label(t) for t in tiers], rotation=25, ha="right", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
 
-        if "vqav2" in tk:
-            out["tasks"]["vqav2"] = {
-                "task":           task_key,
-                "score":          task_res.get("exact_match,none", 0.0),
-                "stderr":         task_res.get("exact_match_stderr,none", 0.0),
-                "n_samples":      n_samp.get(task_key, {}).get("effective", "?"),
-                "max_new_tokens": cfg_t.get("generation_kwargs", {}).get("max_new_tokens", "?"),
-                "post_prompt":    cfg_t.get("lmms_eval_specific_kwargs", {}).get("post_prompt", ""),
-            }
-        elif "pope" in tk:
-            out["tasks"]["pope"] = {
-                "task":      task_key,
-                "accuracy":  task_res.get("pope_accuracy,none",
-                             task_res.get("accuracy,none", 0.0)),
-                "f1":        task_res.get("pope_f1,none",
-                             task_res.get("f1,none", 0.0)),
-                "n_samples": n_samp.get(task_key, {}).get("effective", "?"),
-            }
-        elif "mme" in tk:
-            perception = task_res.get("mme_percetion_score,none",
-                         task_res.get("perception_score,none",
-                         task_res.get("score,none", 0.0)))
-            cognition  = task_res.get("mme_cognition_score,none",
-                         task_res.get("cognition_score,none", 0.0))
-            out["tasks"]["mme"] = {
-                "task":       task_key,
-                "perception": perception,
-                "cognition":  cognition,
-                "total":      perception + cognition,
-                "n_samples":  n_samp.get(task_key, {}).get("effective", "?"),
-            }
+        # value labels
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(errs) * 0.05,
+                    f"{v:.1f}", ha="center", va="bottom", fontsize=8)
 
-    return out
+    path = img_dir / "fig_speed.png"
+    savefig(fig, path)
+    return path
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+def fig_speedup(eff_runs, img_dir):
+    """Normalized speedup bar (baseline = pytorch-bf16)."""
+    tiers = sorted_tiers(eff_runs.keys())
+    baseline = "pytorch-bf16"
+    if baseline not in eff_runs or len(tiers) < 2:
+        return None
 
-def _backend_label(cfg: dict) -> str:
-    return f"{cfg.get('model', '')} · {cfg.get('backend', '')} · {cfg.get('precision', '')}"
-
-
-def _fmt(val, d=1):
-    try:
-        return f"{val:.{d}f}"
-    except (TypeError, ValueError):
-        return str(val)
-
-
-def _speedup(base: float, new: float) -> str:
-    """Latency speedup (lower-is-better): base/new. Arrow shows direction."""
-    if not base or not new:
-        return "—"
-    ratio = base / new
-    return f"{'▲' if ratio > 1 else '▼'} {ratio:.2f}×"
-
-
-def _find_latest(pattern: str) -> str:
-    files = glob.glob(pattern, recursive=True)
-    if not files:
-        raise FileNotFoundError(f"No files matching: {pattern}")
-    return max(files, key=os.path.getmtime)
-
-
-# ── Charts ─────────────────────────────────────────────────────────────────────
-
-def _plot_latency_distributions(per_sample: list, cfg: dict, run_id: str) -> str:
-    """TTFT and Decode Latency per token histograms."""
-    ttft    = [s["ttft_ms"]                   for s in per_sample]
-    dec_lat = [s["decode_latency_ms_per_tok"] for s in per_sample]
+    b_ttft   = eff_runs[baseline]["ttft_mean"]
+    b_decode = eff_runs[baseline]["decode_mean"]
+    x = np.arange(len(tiers))
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    fig.suptitle(f"Latency Distribution — {_backend_label(cfg)}", fontsize=12)
+    fig.subplots_adjust(wspace=0.35)
 
-    for ax, vals, title, xlabel, color in [
-        (axes[0], ttft,    "TTFT — Prefill Phase\n(time to first token)",      "ms",       "#4C72B0"),
-        (axes[1], dec_lat, "Decode Latency — Decode Phase\n(ms per output token)", "ms/tok", "#55A868"),
+    for ax, b_val, metric, title in [
+        (axes[0], b_ttft,   "ttft_mean",   "TTFT Speedup vs PyTorch BF16"),
+        (axes[1], b_decode, "decode_mean", "Decode Speedup vs PyTorch BF16"),
     ]:
-        ax.hist(vals, bins=20, color=color, edgecolor="white")
-        ax.axvline(np.mean(vals), color="red", linestyle="--",
-                   label=f"Mean = {np.mean(vals):.1f}")
-        ax.axvline(np.percentile(vals, 95), color="orange", linestyle="--",
-                   label=f"p95  = {np.percentile(vals, 95):.1f}")
-        ax.set_title(title)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Count")
-        ax.legend(fontsize=9)
+        ratios = [b_val / eff_runs[t][metric] for t in tiers]
+        colors = [tier_color(t) for t in tiers]
 
-    plt.tight_layout()
-    os.makedirs(config.REPORTS_DIR, exist_ok=True)
-    path = f"{config.REPORTS_DIR}/latency_dist_{run_id}.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    return path
+        bars = ax.bar(x, ratios, width=0.6, color=colors, zorder=3)
+        ax.axhline(1.0, color="#3d3d3a", linewidth=1, linestyle="--", label="Baseline (1×)")
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier_label(t) for t in tiers], rotation=25, ha="right", fontsize=9)
+        ax.set_ylabel("Speedup (×)", fontsize=10)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
 
-
-def _plot_vram_breakdown(static_vram: float, per_sample: list,
-                         cfg: dict, run_id: str) -> str:
-    """Stacked bar (static + dynamic) and dynamic box plot."""
-    dynamic = [s["dynamic_vram_gb"] for s in per_sample]
-    n       = len(dynamic)
-    static_arr = np.full(n, static_vram)
-    sort_idx   = np.argsort(dynamic)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
-    fig.suptitle(f"VRAM Breakdown — {_backend_label(cfg)}", fontsize=12)
-
-    dyn_sorted = np.array(dynamic)[sort_idx]
-    axes[0].bar(range(n), static_arr,
-                label=f"Static ({static_vram:.2f} GB fixed)", color="#4C72B0", alpha=0.85)
-    axes[0].bar(range(n), dyn_sorted, bottom=static_arr,
-                label="Dynamic (per-inference)", color="#C44E52", alpha=0.85)
-    axes[0].axhline(static_vram + np.mean(dynamic), color="black", linestyle="--",
-                    linewidth=1, label=f"Mean total = {static_vram + np.mean(dynamic):.3f} GB")
-    axes[0].set_title("Static + Dynamic VRAM per Sample\n(sorted by dynamic)")
-    axes[0].set_xlabel("Sample (sorted)")
-    axes[0].set_ylabel("GB")
-    axes[0].legend(fontsize=8)
-
-    axes[1].boxplot(dynamic, vert=True, patch_artist=True,
-                    boxprops=dict(facecolor="#C44E52", alpha=0.7))
-    axes[1].set_title(f"Dynamic VRAM Distribution\nmean = {np.mean(dynamic):.3f} GB")
-    axes[1].set_ylabel("GB")
-    axes[1].set_xticks([1])
-    axes[1].set_xticklabels([cfg.get("backend", "")])
-
-    plt.tight_layout()
-    path = f"{config.REPORTS_DIR}/vram_breakdown_{run_id}.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    return path
-
-
-def _plot_per_sample_latency(per_sample: list, cfg: dict, run_id: str) -> str:
-    """TTFT and Decode Latency per token line charts across samples."""
-    ttft    = [s["ttft_ms"]                   for s in per_sample]
-    dec_lat = [s["decode_latency_ms_per_tok"] for s in per_sample]
-    idx     = list(range(1, len(ttft) + 1))
-
-    fig, axes = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
-    fig.suptitle(f"Per-sample Latency — {_backend_label(cfg)}", fontsize=12)
-
-    for ax, vals, ylabel, color in [
-        (axes[0], ttft,    "TTFT (ms)",              "#4C72B0"),
-        (axes[1], dec_lat, "Decode Latency (ms/tok)", "#55A868"),
-    ]:
-        mean_v = np.mean(vals)
-        ax.plot(idx, vals, color=color, linewidth=0.9, alpha=0.8)
-        ax.axhline(mean_v, color="red", linestyle="--", linewidth=1.2,
-                   label=f"Mean = {mean_v:.1f}")
-        ax.fill_between(idx, vals, mean_v, alpha=0.1, color=color)
-        ax.set_ylabel(ylabel)
-        ax.legend(fontsize=9)
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-
-    axes[1].set_xlabel("Sample index")
-    plt.tight_layout()
-    path = f"{config.REPORTS_DIR}/per_sample_latency_{run_id}.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    return path
-
-
-def _plot_comparison(eff_list: list, vqav2_score: float | None, run_id: str) -> str:
-    """
-    4-panel comparison bar chart across backends:
-      TTFT · Decode Latency · Static VRAM · VQAv2 Accuracy
-    Missing runs shown as grey hatched placeholders.
-    """
-    palette = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
-    grey    = "#cccccc"
-    n       = len(eff_list)
-
-    labels = [
-        e["config"]["backend"] + "\n" + e["config"]["precision"]
-        for e in eff_list
-    ]
-    # If only one run, add TBD placeholders
-    plot_labels = labels if n > 1 else labels + ["TRT fp16\n(TBD)", "TRT fp8\n(TBD)"]
-    n_bars = len(plot_labels)
-
-    def make_vals(getter):
-        return [getter(e) for e in eff_list] + [0] * (n_bars - n)
-
-    panels = [
-        ("TTFT · prefill (ms)\n↓ better",
-         make_vals(lambda e: e["summary"]["ttft_ms"]["mean"])),
-        ("Decode Latency (ms/tok)\n↓ better",
-         make_vals(lambda e: e["summary"]["decode_latency_ms_per_tok"]["mean"])),
-        ("Static VRAM (GB)\n↓ better",
-         make_vals(lambda e: e["static_vram_gb"])),
-    ]
-
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    fig.suptitle(
-        f"Swift-VLM-Flow — {config.MODEL_NAME} Backend Comparison\n"
-        "Speed ↓ · Memory ↓ · Accuracy ↑",
-        fontsize=11,
-    )
-
-    for ax, (title, vals) in zip(axes[:3], panels):
-        colors = [palette[i % len(palette)] for i in range(n)] + [grey] * (n_bars - n)
-        bars = ax.bar(plot_labels, vals, color=colors, edgecolor="white")
-        for bar, v in zip(bars, vals):
-            if v == 0:
-                bar.set_hatch("//")
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        (max(vals) or 1) * 0.03,
-                        "TBD", ha="center", fontsize=8, color="#888888")
-            else:
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        v * 1.02, f"{v:.1f}", ha="center", fontsize=9)
-        ax.set_title(title, fontsize=10)
-
-    # Accuracy panel
-    ax = axes[3]
-    acc_val = (vqav2_score * 100) if vqav2_score is not None else 0
-    acc_vals   = [acc_val] + [0] * (n_bars - 1)
-    acc_colors = [palette[0]] + [grey] * (n_bars - 1)
-    bars = ax.bar(plot_labels, acc_vals, color=acc_colors, edgecolor="white")
-    for bar, v in zip(bars, acc_vals):
-        if v == 0:
-            bar.set_hatch("//")
-            ax.text(bar.get_x() + bar.get_width() / 2, 0.5,
-                    "TBD", ha="center", fontsize=8, color="#888888")
-        else:
+        for bar, v in zip(bars, ratios):
             ax.text(bar.get_x() + bar.get_width() / 2,
-                    v + 0.5, f"{v:.1f}%", ha="center", fontsize=9)
-    ax.set_ylim(0, 110)
-    ax.set_title("VQAv2 Accuracy (%)\n↑ better", fontsize=10)
+                    bar.get_height() + 0.02,
+                    f"{v:.2f}×", ha="center", va="bottom", fontsize=8)
 
-    plt.tight_layout()
-    os.makedirs(config.REPORTS_DIR, exist_ok=True)
-    path = f"{config.REPORTS_DIR}/comparison_{run_id}.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
+    path = img_dir / "fig_speedup.png"
+    savefig(fig, path)
     return path
 
 
-# ── Markdown section builders ──────────────────────────────────────────────────
+def fig_vram(eff_runs, img_dir):
+    """Stacked bar: Static + Dynamic VRAM."""
+    tiers = sorted_tiers(eff_runs.keys())
+    tiers_with_static = [t for t in tiers if eff_runs[t]["static_vram_gb"] is not None]
+    if not tiers_with_static:
+        return None
 
-def _stats_table(summary: dict, static_vram: float) -> str:
-    header = "| Metric | Mean | Std | Median | p95 | Min | Max |\n"
-    sep    = "|--------|------|-----|--------|-----|-----|-----|\n"
+    static = [eff_runs[t]["static_vram_gb"] for t in tiers_with_static]
+    dynamic = [eff_runs[t]["dynamic_mean_gb"] for t in tiers_with_static]
+    x = np.arange(len(tiers_with_static))
 
-    def row(label, s, d=1):
-        return (
-            f"| {label} "
-            f"| {_fmt(s.get('mean','—'),d)} "
-            f"| {_fmt(s.get('std','—'),d)} "
-            f"| {_fmt(s.get('median','—'),d)} "
-            f"| {_fmt(s.get('p95','—'),d)} "
-            f"| {_fmt(s.get('min','—'),d)} "
-            f"| {_fmt(s.get('max','—'),d)} |\n"
-        )
+    fig, ax = plt.subplots(figsize=(9, 4.5))
 
-    rows  = "| **Speed** | | | | | | |\n"
-    rows += row("TTFT · prefill (ms)",       summary["ttft_ms"])
-    rows += row("Decode Latency (ms/tok)",   summary["decode_latency_ms_per_tok"])
-    rows += "| **Memory** | | | | | | |\n"
-    rows += f"| Static VRAM (GB) | {static_vram:.3f} | — | — | — | — | — |\n"
-    rows += row("Dynamic VRAM (GB)",         summary["dynamic_vram_gb"], d=3)
-    rows += "| **Output** | | | | | | |\n"
-    rows += row("Output Tokens",             summary["output_tokens"])
+    bars_s = ax.bar(x, static,  width=0.6, label="Static VRAM",
+                    color=[tier_color(t) for t in tiers_with_static], zorder=3)
+    bars_d = ax.bar(x, dynamic, width=0.6, bottom=static, label="Dynamic VRAM",
+                    color=[tier_color(t) for t in tiers_with_static],
+                    alpha=0.45, hatch="///", zorder=3)
 
-    return header + sep + rows
+    ax.set_xticks(x)
+    ax.set_xticklabels([tier_label(t) for t in tiers_with_static], rotation=25, ha="right", fontsize=9)
+    ax.set_ylabel("VRAM (GB)", fontsize=10)
+    ax.set_title("Static + Dynamic VRAM Usage", fontsize=11, fontweight="bold")
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
 
+    # labels on stacked bars
+    for i, (s, d) in enumerate(zip(static, dynamic)):
+        ax.text(x[i], s / 2, f"{s:.2f}", ha="center", va="center", fontsize=8, color="white", fontweight="bold")
+        ax.text(x[i], s + d / 2, f"+{d:.2f}", ha="center", va="center", fontsize=7.5)
 
-def _accuracy_section(acc: dict) -> str:
-    tasks = acc["tasks"]
-    parts = []
+    handles = [
+        mpatches.Patch(color="#888780", label="Static VRAM"),
+        mpatches.Patch(color="#888780", alpha=0.45, hatch="///", label="Dynamic VRAM"),
+    ]
+    ax.legend(handles=handles, fontsize=9)
 
-    vqa = tasks.get("vqav2")
-    if vqa:
-        parts.append(f"""### VQAv2 Exact Match
-
-| Item | Value |
-|------|-------|
-| Task | `{vqa['task']}` |
-| Metric | exact_match (ignore_case, ignore_punctuation) |
-| Samples | {vqa['n_samples']} |
-| Max New Tokens | {vqa['max_new_tokens']} |
-| Post Prompt | `{str(vqa['post_prompt']).strip()}` |
-
-**Score: {vqa['score']*100:.1f}% ± {vqa['stderr']*100:.1f}%**
-""")
-    else:
-        parts.append("### VQAv2\n*Not evaluated in this lmms-eval run.*\n")
-
-    pope = tasks.get("pope")
-    if pope:
-        parts.append(f"""### POPE (Hallucination)
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | {pope['accuracy']*100:.1f}% |
-| F1 | {pope['f1']*100:.1f}% |
-| Samples | {pope['n_samples']} |
-
-> POPE probes object hallucination — the most common failure mode of
-> compressed VLMs. F1 is the primary metric.
-""")
-    else:
-        parts.append("### POPE\n*Not evaluated — run `lmms_eval --tasks pope` to add.*\n")
-
-    mme = tasks.get("mme")
-    if mme:
-        parts.append(f"""### MME (Perception + Cognition)
-
-| Sub-score | Value |
-|-----------|-------|
-| Perception | {mme['perception']:.1f} |
-| Cognition  | {mme['cognition']:.1f} |
-| **Total**  | **{mme['total']:.1f}** |
-
-> MME uses choice format — scores are unaffected by answer length,
-> making it stable across backends.
-""")
-    else:
-        parts.append("### MME\n*Not evaluated — run `lmms_eval --tasks mme` to add.*\n")
-
-    return "\n".join(parts)
+    path = img_dir / "fig_vram.png"
+    savefig(fig, path)
+    return path
 
 
-def _comparison_table(eff_list: list, acc: dict | None) -> str:
-    if len(eff_list) < 2:
+def fig_accuracy(acc_runs, img_dir):
+    """Grouped bar: VQA / POPE F1 / MME (normalized to baseline)."""
+    tiers = sorted_tiers(acc_runs.keys())
+    if not tiers:
+        return None
+
+    metrics = [
+        ("vqa_acc",      "VQAv2 Accuracy (%)"),
+        ("pope_avg_f1",  "POPE Avg F1 (%)"),
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig.subplots_adjust(wspace=0.35)
+
+    for ax, (key, title) in zip(axes, metrics):
+        vals = [acc_runs[t].get(key) for t in tiers]
+        # skip if all None
+        if all(v is None for v in vals):
+            ax.set_visible(False)
+            continue
+
+        colors = [tier_color(t) for t in tiers]
+        x = np.arange(len(tiers))
+        bars = ax.bar(x, [v if v is not None else 0 for v in vals],
+                      width=0.6, color=colors, zorder=3)
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier_label(t) for t in tiers], rotation=25, ha="right", fontsize=9)
+        ax.set_ylabel("%", fontsize=10)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ymin = min(v for v in vals if v is not None) * 0.97
+        ax.set_ylim(ymin, 100)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
+
+        for bar, v in zip(bars, vals):
+            if v is not None:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.1,
+                        f"{v:.1f}", ha="center", va="bottom", fontsize=8)
+
+    path = img_dir / "fig_accuracy.png"
+    savefig(fig, path)
+    return path
+
+
+def fig_mme(acc_runs, img_dir):
+    """MME bar: perception + cognition stacked."""
+    tiers = sorted_tiers(acc_runs.keys())
+    tiers_with_mme = [t for t in tiers if acc_runs[t].get("mme_total") is not None]
+    if not tiers_with_mme:
+        return None
+
+    perception = [acc_runs[t]["mme_perception"] for t in tiers_with_mme]
+    cognition  = [acc_runs[t]["mme_cognition"]  for t in tiers_with_mme]
+    x = np.arange(len(tiers_with_mme))
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    bars_p = ax.bar(x, perception, width=0.6, label="Perception",
+                    color=[tier_color(t) for t in tiers_with_mme], zorder=3)
+    bars_c = ax.bar(x, cognition,  width=0.6, bottom=perception, label="Cognition",
+                    color=[tier_color(t) for t in tiers_with_mme],
+                    alpha=0.5, hatch="///", zorder=3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([tier_label(t) for t in tiers_with_mme], rotation=25, ha="right", fontsize=9)
+    ax.set_ylabel("MME Score", fontsize=10)
+    ax.set_title("MME Score (Perception + Cognition)", fontsize=11, fontweight="bold")
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+
+    for i, (p, c) in enumerate(zip(perception, cognition)):
+        ax.text(x[i], p / 2, f"{p:.0f}", ha="center", va="center", fontsize=8, color="white", fontweight="bold")
+        ax.text(x[i], p + c / 2, f"+{c:.0f}", ha="center", va="center", fontsize=7.5)
+
+    handles = [
+        mpatches.Patch(color="#888780", label="Perception"),
+        mpatches.Patch(color="#888780", alpha=0.5, hatch="///", label="Cognition"),
+    ]
+    ax.legend(handles=handles, fontsize=9)
+
+    path = img_dir / "fig_mme.png"
+    savefig(fig, path)
+    return path
+
+
+def fig_pareto(eff_runs, acc_runs, img_dir):
+    """Scatter: Decode Latency vs VQAv2 accuracy; bubble size = static VRAM."""
+    common = sorted_tiers(set(eff_runs) & set(acc_runs))
+    if len(common) < 2:
+        return None
+    tiers_with_vqa = [t for t in common if acc_runs[t].get("vqa_acc") is not None]
+    if len(tiers_with_vqa) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    for t in tiers_with_vqa:
+        x_val = eff_runs[t]["decode_mean"]
+        y_val = acc_runs[t]["vqa_acc"]
+        s_val = eff_runs[t].get("static_vram_gb") or 6.0
+        ax.scatter(x_val, y_val, s=s_val * 80, color=tier_color(t),
+                   alpha=0.85, edgecolors="#3d3d3a", linewidths=0.6, zorder=3)
+        ax.annotate(tier_label(t),
+                    (x_val, y_val),
+                    textcoords="offset points", xytext=(7, 4),
+                    fontsize=8.5)
+
+    ax.set_xlabel("Decode Latency per Token (ms)", fontsize=10)
+    ax.set_ylabel("VQAv2 Accuracy (%)", fontsize=10)
+    ax.set_title("Accuracy–Latency Pareto  (bubble size ∝ Static VRAM)", fontsize=11, fontweight="bold")
+    ax.grid(linestyle="--", alpha=0.4)
+
+    path = img_dir / "fig_pareto.png"
+    savefig(fig, path)
+    return path
+
+
+# ───────────────────────────── markdown table ──────────────────────────────
+def build_table(eff_runs, acc_runs):
+    all_tiers = sorted_tiers(set(eff_runs) | set(acc_runs))
+    baseline_eff = eff_runs.get("pytorch-bf16")
+
+    header = (
+        "| Tier | TTFT (ms) | Decode (ms/tok) | "
+        "Static VRAM (GB) | Dyn VRAM (GB) | "
+        "VQAv2 (%) | POPE F1 (%) | MME Total |"
+    )
+    sep = "|---|---|---|---|---|---|---|---|"
+    rows = [header, sep]
+
+    for t in all_tiers:
+        e = eff_runs.get(t, {})
+        a = acc_runs.get(t, {})
+
+        def fmt_speed(val, std, baseline_val):
+            if val is None:
+                return "–"
+            s = f"{val:.1f} ±{std:.1f}"
+            if baseline_val and t != "pytorch-bf16":
+                ratio = baseline_val / val
+                s += f" ({ratio:.2f}×)"
+            return s
+
+        ttft   = fmt_speed(e.get("ttft_mean"),   e.get("ttft_std"),   baseline_eff.get("ttft_mean")   if baseline_eff else None)
+        decode = fmt_speed(e.get("decode_mean"), e.get("decode_std"), baseline_eff.get("decode_mean") if baseline_eff else None)
+        static = f"{e['static_vram_gb']:.2f}" if e.get("static_vram_gb") is not None else "–"
+        dynamic = f"{e['dynamic_mean_gb']:.3f} ±{e['dynamic_std_gb']:.3f}" if e.get("dynamic_mean_gb") is not None else "–"
+        vqa  = f"{a['vqa_acc']:.1f}"   if a.get("vqa_acc")     is not None else "–"
+        pope = f"{a['pope_avg_f1']:.1f}" if a.get("pope_avg_f1") is not None else "–"
+        mme  = f"{a['mme_total']:.0f}" if a.get("mme_total")   is not None else "–"
+
+        rows.append(f"| **{tier_label(t)}** | {ttft} | {decode} | {static} | {dynamic} | {vqa} | {pope} | {mme} |")
+
+    return "\n".join(rows)
+
+
+# ───────────────────────────── report builder ──────────────────────────────
+def build_report(eff_runs, acc_runs, img_dir, output_dir):
+    imgs = {}
+
+    print("Generating figures...")
+    if eff_runs:
+        p = fig_speed(eff_runs, img_dir)
+        if p: imgs["speed"] = p
+        p = fig_speedup(eff_runs, img_dir)
+        if p: imgs["speedup"] = p
+        p = fig_vram(eff_runs, img_dir)
+        if p: imgs["vram"] = p
+
+    if acc_runs:
+        p = fig_accuracy(acc_runs, img_dir)
+        if p: imgs["accuracy"] = p
+        p = fig_mme(acc_runs, img_dir)
+        if p: imgs["mme"] = p
+
+    if eff_runs and acc_runs:
+        p = fig_pareto(eff_runs, acc_runs, img_dir)
+        if p: imgs["pareto"] = p
+
+    def img_link(key, alt):
+        if key in imgs:
+            rel = os.path.relpath(imgs[key], output_dir)
+            return f"![{alt}]({rel})"
         return ""
 
-    baseline = eff_list[0]
-    others   = eff_list[1:]
+    # ── assemble tiers metadata ──
+    all_tiers = sorted_tiers(set(eff_runs) | set(acc_runs))
+    model = None
+    for src in [eff_runs, acc_runs]:
+        for t in all_tiers:
+            if t in src and src[t].get("config", {}).get("model"):
+                model = src[t]["config"]["model"]
+                break
+        if model:
+            break
+    model_str = model or "Qwen2-VL"
 
-    header = ("| Metric | "
-              + f"{baseline['config']['backend']} {baseline['config']['precision']} (baseline) | "
-              + "".join(f"{e['config']['backend']} {e['config']['precision']} | " for e in others)
-              + "".join(f"vs {e['config']['backend']} | " for e in others)
-              + "\n")
-    sep = "|--------|" + "--------|" * (1 + len(others) * 2) + "\n"
+    lines = []
+    lines.append(f"# {model_str} — Quantization Benchmark Results\n")
+    lines.append("> Auto-generated by `report.py`. Efficiency: mean ± std over benchmark samples. "
+                 "Speedup ratio in parentheses = PyTorch BF16 latency ÷ current latency.\n")
 
-    def eff_row(label, getter, d=1):
-        base_val = getter(baseline)
-        row = f"| {label} | {_fmt(base_val, d)} | "
-        row += "".join(f"{_fmt(getter(e), d)} | " for e in others)
-        row += "".join(f"{_speedup(base_val, getter(e))} | " for e in others)
-        return row + "\n"
+    # ── Summary table ──
+    lines.append("## Results Summary\n")
+    lines.append(build_table(eff_runs, acc_runs))
+    lines.append("")
 
-    rows  = eff_row("TTFT · prefill (ms)",     lambda e: e["summary"]["ttft_ms"]["mean"])
-    rows += eff_row("Decode Latency (ms/tok)",  lambda e: e["summary"]["decode_latency_ms_per_tok"]["mean"])
-    rows += eff_row("Static VRAM (GB)",         lambda e: e["static_vram_gb"], d=3)
-    rows += eff_row("Dynamic VRAM (GB)",        lambda e: e["summary"]["dynamic_vram_gb"]["mean"], d=3)
+    # ── Speed section ──
+    if "speed" in imgs:
+        lines.append("## Speed\n")
+        lines.append("Prefill (TTFT) and decode latency measured separately. "
+                     "Error bars = ±1 std across samples.\n")
+        lines.append(img_link("speed", "TTFT and Decode Latency"))
+        lines.append("")
 
-    if acc and acc["tasks"].get("vqav2"):
-        score = acc["tasks"]["vqav2"]["score"] * 100
-        rows += f"| VQAv2 Accuracy | {score:.1f}% | " + "— | " * len(others) * 2 + "\n"
+    if "speedup" in imgs:
+        lines.append("### Speedup vs PyTorch BF16\n")
+        lines.append(img_link("speedup", "Speedup"))
+        lines.append("")
 
-    note = "\n*▲ speedup > 1× = faster than baseline (latency metrics, lower is better)*\n"
-    return header + sep + rows + note
+    # ── Memory section ──
+    if "vram" in imgs:
+        lines.append("## Memory\n")
+        lines.append("Static VRAM = model loaded, before inference. "
+                     "Dynamic VRAM = additional peak during one forward pass.\n"
+                     "TRT static VRAM include pre-allocated buffer for activation and profile. Therefore, the TRT static VRAM bigger than pytorch baseline.\n")
+        lines.append(img_link("vram", "VRAM Usage"))
+        lines.append("")
 
+    # ── Accuracy section ──
+    if "accuracy" in imgs or "mme" in imgs:
+        lines.append("## Accuracy\n")
+        lines.append("VQAv2 (500 samples), POPE (adversarial/popular/random subsets), "
+                     "MME (full benchmark).\n")
+        if "accuracy" in imgs:
+            lines.append(img_link("accuracy", "VQA and POPE Accuracy"))
+            lines.append("")
+        if "mme" in imgs:
+            lines.append("### MME Score\n")
+            lines.append(img_link("mme", "MME Score"))
+            lines.append("")
 
-# ── Main entry point ───────────────────────────────────────────────────────────
+    # ── Pareto ──
+    if "pareto" in imgs:
+        lines.append("## Accuracy–Latency Tradeoff\n")
+        lines.append("Each point is one quantization tier. Bubble size scales with static VRAM.\n")
+        lines.append(img_link("pareto", "Pareto Scatter"))
+        lines.append("")
 
-def generate_report(
-    efficiency_paths: list[str],
-    lmms_path: str | None = None,
-    output_tag: str = "",
-) -> str:
-    """
-    Generate charts and a Markdown report.
+    # ── Per-task MME detail ──
+    mme_detail_tiers = [t for t in all_tiers if t in acc_runs
+                        and acc_runs[t].get("config")]
+    # Load raw mme per_task if available — we need the original JSON for this
+    # (we only stored aggregates in acc_runs, so skip per-task table for now)
 
-    Args:
-        efficiency_paths: Paths to run_benchmark.py JSONs.
-                          First element = baseline; rest = TRT variants.
-        lmms_path:        Path to lmms-eval JSON, or None (efficiency-only mode).
-        output_tag:       Optional suffix for the output filename.
+    # ── POPE detail ──
+    pope_detail_lines = []
+    for t in all_tiers:
+        if t not in acc_runs:
+            continue
+        a = acc_runs[t]
+        if a.get("pope_avg_f1") is not None:
+            pope_detail_lines.append(
+                f"- **{tier_label(t)}**: avg F1 = {a['pope_avg_f1']:.1f}%, avg acc = {a.get('pope_avg_acc', '–')}"
+            )
+    if pope_detail_lines:
+        lines.append("## POPE Detail\n")
+        lines.append("\n".join(pope_detail_lines))
+        lines.append("")
 
-    Returns:
-        Path to the generated .md report.
-    """
-    eff_list = [_load_efficiency(p) for p in efficiency_paths]
-    acc      = _load_lmms(lmms_path)
-
-    baseline    = eff_list[0]
-    run_id      = baseline["run_id"]
-    cfg         = baseline["config"]
-    summary     = baseline["summary"]
-    per_sample  = baseline["per_sample"]
-    static_vram = baseline["static_vram_gb"]
-
-    os.makedirs(config.REPORTS_DIR, exist_ok=True)
-
-    # Charts
-    chart_latency    = _plot_latency_distributions(per_sample, cfg, run_id)
-    chart_vram       = _plot_vram_breakdown(static_vram, per_sample, cfg, run_id)
-    chart_per_sample = _plot_per_sample_latency(per_sample, cfg, run_id)
-
-    vqav2_score  = acc["tasks"]["vqav2"]["score"] if (acc and acc["tasks"].get("vqav2")) else None
-    show_compare = len(eff_list) > 1 or acc is not None
-    chart_compare = (
-        _plot_comparison(eff_list, vqav2_score, run_id) if show_compare else None
-    )
-
-    # Shorthand stats
-    ttft_s    = summary["ttft_ms"]
-    dec_s     = summary["decode_latency_ms_per_tok"]
-    dyn_s     = summary["dynamic_vram_gb"]
-    total_vram_mean = static_vram + dyn_s["mean"]
-
-    now_pst = datetime.now(
-        zoneinfo.ZoneInfo("America/Los_Angeles")
-    ).strftime("%Y-%m-%d %H:%M:%S %Z")
-
-    mode_note = (
-        "Efficiency + Accuracy (lmms-eval)" if acc
-        else "Efficiency only (no lmms-eval provided)"
-    )
-
-    # Env rows for all runs
-    env_runs = "\n".join(
-        f"| {'Baseline' if i == 0 else f'TRT #{i}'} | `{e['run_id']}` "
-        f"| {e['config']['backend']} | {e['config']['precision']} |"
-        for i, e in enumerate(eff_list)
-    )
-
-    # Accuracy block
-    acc_block = (
-        f"""---
-
-## 4. Accuracy Results (lmms-eval)
-
-*Eval time: {acc['eval_time_seconds']:.0f}s · Date: {acc['date']} · lmms-eval {acc['lmms_eval_version']}*
-
-{_accuracy_section(acc)}"""
-        if acc else
-        """---
-
-## 4. Accuracy Results
-
-*lmms-eval not provided. Run with `--lmms <path>` to include accuracy.*"""
-    )
-
-    # Comparison block
-    comp_block = (
-        f"""---
-
-## 5. Cross-Backend Comparison
-
-{_comparison_table(eff_list, acc)}
-![Comparison Chart](comparison_{run_id}.png)"""
-        if show_compare else ""
-    )
-
-    section_num = 6 if show_compare else 5
-
-    md = f"""# VLM Benchmark Report
-
-**Run ID**: `{run_id}`
-**Generated**: {now_pst}
-**Mode**: {mode_note}
-
----
-
-## 1. Environment
-
-| Item | Value |
-|------|-------|
-| Model | {cfg['model']} |
-| GPU | NVIDIA GeForce RTX 5060 Ti (16 GB) |
-| CUDA Toolkit | 12.8 |
-| TensorRT-LLM Container | 0.21.0 |
-| PyTorch | 2.8.0 |
-| Transformers | 4.51.3 |{f"""
-| lmms-eval | {acc['lmms_eval_version']} |""" if acc else ""}
-
-### Runs
-
-| Role | Run ID | Backend | Precision |
-|------|--------|---------|-----------|
-{env_runs}
-
----
-
-## 2. Evaluation Design
-
-```
-run_benchmark.py  →  TTFT, Decode Latency/tok, Static/Dynamic VRAM  (efficiency)
-lmms-eval         →  VQAv2, POPE, MME                                (accuracy)
-```
-
-| Tool | Samples | Prompt | Purpose |
-|------|---------|--------|---------|
-| run_benchmark.py | {cfg['num_samples']} | `{{question}} Answer in a complete sentence.` | Forces ≥{cfg.get('min_new_tokens','20')} output tokens for stable Decode Latency |
-| lmms-eval | per-task | task-standard post-prompt | Matches ground-truth annotation style |
-
-> The two tools use different prompts intentionally.
-> Efficiency and accuracy numbers come from different inference conditions by design.
-
----
-
-## 3. Efficiency Results
-
-*{cfg['num_samples']} VQAv2 samples · {cfg['num_warmup']} warmup runs · seed={cfg['seed']}*
-
-{_stats_table(summary, static_vram)}
-
-### VRAM Summary
-
-| | Value |
-|-|-------|
-| Static VRAM (model load) | **{static_vram:.3f} GB** |
-| Dynamic VRAM mean (per inference) | **{dyn_s['mean']:.3f} GB** |
-| Total peak mean | **{total_vram_mean:.3f} GB** |
-
-> **Static** — determines whether the model fits on the device.  
-> **Dynamic** — headroom needed for concurrent processes.
-
-### Charts
-
-#### 3.1 Latency Distributions (Prefill · Decode)
-![Latency Distribution](latency_dist_{run_id}.png)
-
-#### 3.2 VRAM Breakdown (Static · Dynamic)
-![VRAM Breakdown](vram_breakdown_{run_id}.png)
-
-#### 3.3 Per-sample Latency
-![Per-sample Latency](per_sample_latency_{run_id}.png)
-
-{acc_block}
-
-{comp_block}
-
----
-
-## {section_num}. Methodology
-
-### Speed
-- **TTFT** — separate `max_new_tokens=1` call per sample; isolates prefill (visual encoding + prompt).
-- **Decode Latency per token** — `(total_latency − TTFT) / output_tokens`.
-  `min_new_tokens={cfg.get('min_new_tokens','—')}` ensures ≥20 output tokens so per-token overhead is stable.
-- TRT optimises prefill via kernel fusion, decode via KV-cache — reporting them separately attributes gains correctly.
-- Timing: `torch.cuda.synchronize()` + `time.perf_counter()`.
-- Warmup: {cfg['num_warmup']} runs *(for TRT: verify CUDA-graph capture converges within warmup budget)*.
-
-### Memory
-- **Static VRAM** — `torch.cuda.memory_allocated()` after model load, before inference.
-- **Dynamic VRAM** — `max_memory_allocated() − static_vram`, reset each sample.
-
-### Accuracy
-- VQAv2 `exact_match`: case + punctuation normalised.
-- POPE: binary yes/no hallucination probing; F1 primary metric.
-- MME: choice-format perception/cognition; insensitive to answer-length distribution.
-
-### Reproducibility
-- Efficiency: `random.seed({cfg['seed']})` for VQAv2 subset — identical sample IDs across all backend runs.
-- Accuracy: lmms-eval `random_seed=0`, `torch_seed=1234`.
-- Docker: `nvcr.io/nvidia/tensorrt-llm/release:0.21.0`
-
----
-
-*Report generated by `report.py` — Swift-VLM-Flow, CSE 599S, UW*
-"""
-
-    tag = f"_{output_tag}" if output_tag else ""
-    report_path = f"{config.REPORTS_DIR}/report_{run_id}{tag}.md"
-    with open(report_path, "w") as f:
-        f.write(md)
-
-    print(f"  latency dist  → {chart_latency}")
-    print(f"  vram breakdown→ {chart_vram}")
-    print(f"  per-sample    → {chart_per_sample}")
-    if chart_compare:
-        print(f"  comparison    → {chart_compare}")
-    print(f"  report        → {report_path}")
+    report_path = output_dir / "report.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
 
 
-# ── CLI ────────────────────────────────────────────────────────────────────────
-
-def _parse_args():
-    p = argparse.ArgumentParser(description="Generate VLM benchmark report")
-    p.add_argument("--efficiency", type=str, default=None,
-                   help="Baseline efficiency JSON (default: latest baseline_*.json)")
-    p.add_argument("--trt", type=str, nargs="*", default=None,
-                   help="TRT run JSON(s) to compare against baseline")
-    p.add_argument("--lmms", type=str, default=None,
-                   help="lmms-eval results JSON (optional)")
-    p.add_argument("--output_tag", type=str, default="",
-                   help="Optional suffix appended to output filename")
-    return p.parse_args()
+# ────────────────────────────────── main ───────────────────────────────────
+def create_parser():
+    parser = argparse.ArgumentParser(description="Generate benchmark report from JSON files")
+    parser.add_argument("jsons", nargs="*",
+                        help="Efficiency or accuracy JSON files (overrides INPUT_JSONS if provided)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Root output directory (overrides OUTPUT_DIR if provided)")
+    return parser
 
 
 def main():
-    args = _parse_args()
+    args = create_parser().parse_args()
 
-    eff_path = args.efficiency or _find_latest(
-        os.path.join(config.RAW_DIR, "baseline_*.json")
-    )
-    eff_paths = [eff_path] + (args.trt or [])
+    json_paths = args.jsons if args.jsons else INPUT_JSONS
+    base_dir   = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
 
-    print("=" * 60)
-    print(" report.py — Swift-VLM-Flow")
-    for i, p in enumerate(eff_paths):
-        print(f"  {'Baseline' if i == 0 else f'TRT #{i}':10}: {p}")
-    if args.lmms:
-        print(f"  {'lmms-eval':10}: {args.lmms}")
-    print("=" * 60)
+    timestamp  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir    = base_dir / f"report_{timestamp}"
+    img_dir    = run_dir / "img"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    img_dir.mkdir(exist_ok=True)
 
-    report = generate_report(eff_paths, args.lmms, args.output_tag)
-    print(f"\nDone → {report}")
+    print(f"Loading {len(json_paths)} JSON file(s)...")
+    eff_runs, acc_runs = load_runs(json_paths)
+
+    print(f"  Efficiency runs found: {sorted_tiers(eff_runs.keys())}")
+    print(f"  Accuracy runs found:   {sorted_tiers(acc_runs.keys())}")
+
+    report_path = build_report(eff_runs, acc_runs, img_dir, run_dir)
+    print(f"\nReport written to: {report_path}")
+    print(f"Images saved in:   {img_dir}")
 
 
 if __name__ == "__main__":
