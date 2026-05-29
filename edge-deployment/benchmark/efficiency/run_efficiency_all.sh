@@ -83,7 +83,7 @@ for PRECISION in "${TRT_ORDER[@]}"; do
       --output_tag  "${PRECISION}_v1"
 done
 
-run_cmd "trt (int4 awq)" \
+run_cmd "trt (int4_awq)" \
   python3 run_benchmark_trt.py \
     --engine_dir "${TRT_ENGINES[int4_awq]}"" \
     --precision   int4 \
