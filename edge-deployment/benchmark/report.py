@@ -35,12 +35,12 @@ INPUT_JSONS = [
     "../results/efficiency/trt/fp8_20260528_085545_fp8_v1.json",
     "../results/efficiency/trt/int8_20260528_085621_int8_v1.json",
     "../results/efficiency/trt/int4_20260528_085659_int4_v1.json",
-    # "../results/efficiency/trt_int_awq_efficiency.json",
+    "../results/efficiency/trt/int4_20260529_033633_int4_awq.json",
     "../results/accuracy/baseline/bf16_20260528_042224.json",
     "../results/accuracy/trt/bf16_20260528_044749.json",
     "../results/accuracy/trt/fp8_20260528_071102.json",
-    # "../results/accuracy/trt_int8_accuracy.json",
-    # "../results/accuracy/trt_int4_accuracy.json",
+    "../results/accuracy/trt/int8_20260528_181038.json",
+    "../results/accuracy/trt/int4_20260528_235602.json",
     "../results/accuracy/trt/int4_20260528_063759.json", # awq
 ]
 
