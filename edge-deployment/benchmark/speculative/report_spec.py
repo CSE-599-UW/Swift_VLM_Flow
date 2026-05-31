@@ -57,7 +57,7 @@ autoregressively. LLaVA-Bench-in-the-Wild, {c['num_samples']} samples, greedy.
 | Decode latency (ms/tok) | {c['base_decode_ms_per_tok']:.2f} | {c['spec_decode_ms_per_tok']:.2f} | {c['speedup']:.2f}× faster |
 | Acceptance length (tokens/step) | — | {c['acceptance_length']:.2f} | — |
 | Prefill / TTFT (ms) | {c['base_ttft_ms']:.1f} | {c['spec_ttft_ms']:.1f} | — |
-| Peak VRAM (GB) | {c['base_vram_gb']:.2f} | {c['spec_vram_gb']:.2f} | +{c['spec_vram_gb']-c['base_vram_gb']:.2f} |
+| Peak VRAM (GB) | {c['base_vram_gb']:.2f} | {c['spec_vram_gb']:.2f} | {c['spec_vram_gb']-c['base_vram_gb']:+.2f} |
 
 **Headline: EAGLE3 speculative decoding delivers a {c['speedup']:.2f}× decode speedup**
 (acceptance length {c['acceptance_length']:.2f} tokens/verification step).

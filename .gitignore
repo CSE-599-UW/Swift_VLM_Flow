@@ -9,6 +9,7 @@
 **/results/lmms_eval/
 **/results/efficiency/
 **/results/accuracy/
+**/results/speculative/
 
 # Python
 __pycache__/
