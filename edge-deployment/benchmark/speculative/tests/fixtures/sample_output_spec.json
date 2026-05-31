@@ -1,0 +1,27 @@
+{
+    "input_file": "/tmp/sdtest/input.json",
+    "responses": [
+        {
+            "batch_idx": 0,
+            "formatted_complete_request": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe this image in detail.<|im_end|>\n<|im_start|>assistant\n",
+            "formatted_system_prompt": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n",
+            "messages": [
+                {
+                    "content": [
+                        {
+                            "image": "/home/steven/TensorRT-Edge-LLM/examples/multimodal/pics/woman_and_dog.jpeg",
+                            "type": "image"
+                        },
+                        {
+                            "text": "Describe this image in detail.",
+                            "type": "text"
+                        }
+                    ],
+                    "role": "user"
+                }
+            ],
+            "output_text": "The image depicts a serene beach scene during what appears to be either sunrise or sunset, as indicated by the warm, golden light illuminating the sky and casting long shadows on the sand. A woman is sitting on the sandy beach, facing a golden retriever dog. The woman is dressed in a plaid shirt and dark pants, and she is smiling warmly at the dog. The dog, wearing a colorful harness, is sitting on its hind legs and extending its front paw towards the woman, as if giving her a high-five. The beach is relatively empty, with only a few footprints visible in the sand, suggesting a peaceful and quiet moment. The ocean",
+            "request_idx": 0
+        }
+    ]
+}

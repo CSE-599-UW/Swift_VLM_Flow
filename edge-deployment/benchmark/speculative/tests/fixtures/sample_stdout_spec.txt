@@ -1,0 +1,96 @@
+[06:07:55.408] [INFO] [llm_inference.cpp:322:parseLLMInferenceArgs] args.inputFile: /tmp/sdtest/input.json
+[06:07:55.408] [INFO] [llm_inference.cpp:328:parseLLMInferenceArgs] args.engineDir: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm
+[06:07:55.408] [INFO] [llm_inference.cpp:336:parseLLMInferenceArgs] args.multimodalEngineDir: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/visual
+[06:07:55.408] [INFO] [llm_inference.cpp:344:parseLLMInferenceArgs] args.outputFile: /tmp/sdtest/output.json
+[06:07:55.408] [INFO] [llm_inference.cpp:348:parseLLMInferenceArgs] args.dumpOutput: enabled
+[06:07:55.408] [INFO] [llm_inference.cpp:353:parseLLMInferenceArgs] args.profileOutputFile: /tmp/sdtest/profile.json
+[06:07:55.408] [INFO] [llm_inference.cpp:358:parseLLMInferenceArgs] Profile dumping to console is enabled
+[06:07:55.408] [INFO] [llm_inference.cpp:368:parseLLMInferenceArgs] Speculative decoding enabled
+[06:07:55.408] [INFO] [llm_inference.cpp:369:parseLLMInferenceArgs] Spec draft topK: 10
+[06:07:55.408] [INFO] [llm_inference.cpp:370:parseLLMInferenceArgs] Spec draft step: 6
+[06:07:55.408] [INFO] [llm_inference.cpp:371:parseLLMInferenceArgs] Spec verify tree size: 60
+[06:07:55.536] [INFO] [memoryMonitor.cpp:65:start] Memory Monitor Started - iGPU detected, monitoring unified memory through RSS
+[06:07:55.536] [INFO] [trtUtils.h:66:loadEdgellmPluginLib] EDGELLM_PLUGIN_PATH variable is not set. Default to build/libNvInfer_edgellm_plugin.so
+[06:07:55.762] [INFO] [llm_inference.cpp:493:main] Successfully parsed 0 LoRA weights from input file.
+[06:07:55.762] [INFO] [llm_inference.cpp:494:main] Successfully parsed 1 batches of requests from input file.
+[06:07:59.961] [INFO] [llmRuntimeUtils.cpp:482:loadEmbeddingTable] Loaded FP16 embedding: [152064, 3584]
+[06:07:59.971] [INFO] [llmEngineRunner.cpp:109:LLMEngineRunner] Loading config file /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm/base_config.json
+[06:07:59.971] [INFO] [llmRuntimeUtils.cpp:166:collectRopeConfig] Collected rope config: RopeConfig:  type: MRope  rotaryScale: 1  rotaryTheta: 1e+06  maxPositionEmbeddings: 128000
+[06:07:59.971] [INFO] [llmEngineRunner.cpp:743:initializeConfigFromJson] initializeConfigFromJson(): Loaded LLMEngineRunner with config: LLMEngineRunnerConfig:  enableEagleSpecDecode: true  numDecoderLayers: 28  numKVHeads: 4  headDim: 128  rotaryDim: 128  hiddenSize: 3584  maxSupportedBatchSize: 1  maxSupportedInputLength: 1024  maxKVCacheCapacity: 4096  maxSupportedLoraRank: 0  numDeepstackFeatures: 0  outputHiddenDim (For Eagle SpecDecode): 10752  maxVerifyTreeSize (For Eagle SpecDecode): 60
+[06:07:59.971] [INFO] [llmEngineRunner.cpp:137:LLMEngineRunner] Loading engine file: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm/eagle_base.engine
+[06:07:59.972] [INFO] [TensorRT] Loaded engine size: 13516 MiB
+[06:08:01.884] [INFO] [TensorRT] [MS] Running engine with multi stream info
+[06:08:01.884] [INFO] [TensorRT] [MS] Number of aux streams is 2
+[06:08:01.884] [INFO] [TensorRT] [MS] Number of total worker streams is 3
+[06:08:01.884] [INFO] [TensorRT] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[06:08:02.058] [INFO] [TensorRT] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +0, now: CPU 0, GPU 13486 (MiB)
+[06:08:02.130] [INFO] [llmEngineRunner.cpp:375:LLMEngineRunner] Allocated dummy hidden_states output buffer: 10752 elements (engineHasHiddenStates=1)
+[06:08:02.185] [INFO] [llmInferenceSpecDecodeRuntime.cpp:125:operator()] LLMEngineRunner successfully loaded and initialized eagle base engine.
+[06:08:02.186] [INFO] [eagleDraftEngineRunner.cpp:99:EagleDraftEngineRunner] Loading eagle draft config file: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm/draft_config.json
+[06:08:02.186] [INFO] [eagleDraftEngineRunner.cpp:389:initializeConfigFromJson] initializeConfigFromJson(): Loaded EagleDraftEngineRunner with config: EagleDraftEngineRunnerConfig:  numDecoderLayers: 1  numKVHeads: 4  headDim: 128  rotaryDim: 128  maxSupportedInputLength: 1024  maxKVCacheCapacity: 4096  draftModelVocabSize: 32000  maxDraftTreeSize: 60  baseModelHiddenDim: 10752  draftModelHiddenDim: 3584
+[06:08:02.186] [INFO] [eagleDraftEngineRunner.cpp:127:EagleDraftEngineRunner] Loading eagle draft engine file: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm/eagle_draft.engine
+[06:08:02.186] [INFO] [TensorRT] Loaded engine size: 770 MiB
+[06:08:02.275] [INFO] [TensorRT] [MS] Running engine with multi stream info
+[06:08:02.275] [INFO] [TensorRT] [MS] Number of aux streams is 2
+[06:08:02.275] [INFO] [TensorRT] [MS] Number of total worker streams is 3
+[06:08:02.275] [INFO] [TensorRT] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[06:08:02.287] [INFO] [TensorRT] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +0, now: CPU 0, GPU 14254 (MiB)
+[06:08:02.287] [INFO] [llmRuntimeUtils.cpp:166:collectRopeConfig] Collected rope config: RopeConfig:  type: MRope  rotaryScale: 1  rotaryTheta: 1e+06  maxPositionEmbeddings: 8192
+[06:08:02.290] [INFO] [llmInferenceSpecDecodeRuntime.cpp:153:initializeCommon] EagleDraftEngineRunner successfully initialized.
+[06:08:02.290] [INFO] [llmInferenceSpecDecodeRuntime.cpp:160:initializeCommon] Runtime batch size set to: 1 (base engine max: 1, draft engine max: 1)
+[06:08:02.294] [INFO] [llmInferenceSpecDecodeRuntime.cpp:356:initializeCommon] Runtime tensors successfully allocated.
+[06:08:02.295] [INFO] [llmInferenceSpecDecodeRuntime.cpp:412:initializeCommon] Start loading tokenizer from model directory: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm
+[06:08:02.442] [INFO] [tokenizer.cpp:385:loadVocabulary] Loaded 151643 vocabulary tokens
+[06:08:02.480] [INFO] [tokenizer.cpp:96:loadFromHF] Loaded 22 special tokens
+[06:08:02.502] [INFO] [tokenizer.cpp:782:loadChatTemplate] Successfully loaded chat template from /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm/processed_chat_template.json (for model: /home/steven/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct/snapshots/cc594898137f460bfe9f0759e9844b3ce807cfb5)
+[06:08:02.502] [INFO] [tokenizer.cpp:123:loadFromHF] Successfully loaded tokenizer from /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm (vocab_size=151665)
+[06:08:02.511] [INFO] [llmInferenceSpecDecodeRuntime.cpp:418:initializeCommon] Tokenizer successfully loaded from model directory: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/llm
+[06:08:02.522] [INFO] [TensorRT] Loaded engine size: 1309 MiB
+[06:08:07.764] [INFO] [TensorRT] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +0, now: CPU 0, GPU 15546 (MiB)
+[06:08:07.774] [INFO] [llmInferenceSpecDecodeRuntime.cpp:430:operator()] Vision runner successfully initialized
+[06:08:07.774] [INFO] [llmInferenceSpecDecodeRuntime.cpp:457:initializeCommon] Attempting to load Action runner from /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/visual/action
+MmapReader: Cannot open file: /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/visual/action/action.engine
+[06:08:07.784] [INFO] [llmInferenceSpecDecodeRuntime.cpp:464:initializeCommon] Failed to load Action runner from /home/steven/tensorrt-edgellm-workspace/Qwen2.5-VL-7B-Instruct/engines/visual/action: /home/steven/TensorRT-Edge-LLM/cpp/common/mmapReader.cpp:49: Failed to load file in MmapReader constructor
+[06:08:07.791] [INFO] [llmInferenceSpecDecodeRuntime.cpp:509:initializeCommon] Setup shared execution context memory: 190846464 bytes (base requires: 190846464, draft requires: 162529280, vision requires: 104562688, audio requires: 0, action requires: 0)
+[06:08:07.791] [INFO] [TensorRT] Switching optimization profile from: 0 to 1. Please ensure there are no enqueued operations pending in this context prior to switching profiles
+[06:08:07.889] [INFO] [TensorRT] Switching optimization profile from: 0 to 1. Please ensure there are no enqueued operations pending in this context prior to switching profiles
+[06:08:08.159] [INFO] [llmInferenceSpecDecodeRuntime.cpp:2051:captureDecodingCUDAGraph] Successfully captured decoding CUDA graphs for all stages.
+[06:08:08.159] [INFO] [llm_inference.cpp:632:main] Processing 1 batched requests...
+[06:08:08.159] [INFO] [llm_inference.cpp:642:main] Progress: 1/1 (100.000000%)
+[06:08:08.159] [WARNING] [llmInferenceSpecDecodeRuntime.cpp:553:handleRequest] Spec-decode active: overriding sampling params to greedy (ignoring temp/topK/topP).
+[06:08:08.159] [INFO] [llmInferenceSpecDecodeRuntime.cpp:1096:multiModalRuntimePreprocess] Processing vision inputs
+[06:08:08.183] [INFO] [TensorRT] Switching optimization profile from: 1 to 0. Please ensure there are no enqueued operations pending in this context prior to switching profiles
+[06:08:08.363] [INFO] [TensorRT] Switching optimization profile from: 1 to 0. Please ensure there are no enqueued operations pending in this context prior to switching profiles
+[06:08:11.679] [INFO] [llm_inference.cpp:904:main] Response for request 0 batch 0: The image depicts a serene beach scene during what appears to be either sunrise or sunset, as indicated by the warm, golden light illuminating the sky and casting long shadows on the sand. A woman is sitting on the sandy beach, facing a golden retriever dog. The woman is dressed in a plaid shirt and dark pants, and she is smiling warmly at the dog. The dog, wearing a colorful harness, is sitting on its hind legs and extending its front paw towards the woman, as if giving her a high-five. The beach is relatively empty, with only a few footprints visible in the sand, suggesting a peaceful and quiet moment. The ocean
+[06:08:11.679] [INFO] [llm_inference.cpp:974:main] Processing complete: 1/1 batched requests successful
+[06:08:11.679] [INFO] [llm_inference.cpp:1013:main] 
+=== Performance Summary ===
+=== LLM Prefill ===
+Reused Tokens: 0
+Computed Tokens: 513
+Average Tokens per Run: 513.00
+Average Time per Run: 132.2344 ms
+Tokens/Second: 3879.5
+Average Time per Token: 0.2578 ms
+LLM Prefill - Total Runs: 1, Total GPU Time: 132.23 ms, Average: 132.23 ms
+=== Eagle Generation ===
+Total Iterations: 35
+Total Generated Tokens: 132
+Average Tokens per Run: 132.00
+Average Acceptance Rate: 3.77
+Overall Tokens/Second (excluding base prefill): 41.5
+Draft Model Prefill - Total Runs: 1, Total GPU Time: 6.66 ms, Average: 6.66 ms
+Construct Draft Tree - Total Runs: 35, Total GPU Time: 664.79 ms, Average: 18.99 ms
+Base Model Verification - Total Runs: 35, Total GPU Time: 2507.44 ms, Average: 71.64 ms
+=== Multimodal Processing ===
+Total Images: 1
+Total Image Tokens: 486
+Total Multimodal Tokens: 486
+Average Time per Token: 0.1203 ms
+Vision Encoder - Total Runs: 1, Total GPU Time: 58.48 ms, Average: 58.48 ms
+=== Memory Usage ===
+Peak Unified Memory: 13959.09 MB (14637162496 bytes)
+=====================================
+
+[06:08:11.680] [INFO] [llm_inference.cpp:1056:main] Profile data exported to: /tmp/sdtest/profile.json
+[06:08:11.680] [INFO] [llm_inference.cpp:1079:main] All responses exported to: /tmp/sdtest/output.json
