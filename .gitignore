@@ -28,3 +28,5 @@ __pycache__/
 # TRT timing cache
 model.cache
 **/model.cache
+# Local-only fp8 export handoff (kept on disk, intentionally untracked)
+edge-deployment/benchmark/speculative/docs/fp8-export-on-b200.md

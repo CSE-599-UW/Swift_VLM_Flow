@@ -11,9 +11,8 @@ autoregressively (**SD-off**) vs with the EAGLE3 draft (**SD-on**).
 
 - **Base:** `Qwen/Qwen2.5-VL-7B-Instruct`
 - **Draft (EAGLE3):** `Rayzl/qwen2.5-vl-7b-eagle3-sgl`
-- **Precision (this run):** **bf16** LLM + fp16 visual. fp8 is deferred to an 8×B200 export — see
-  [docs/fp8-export-on-b200.md](docs/fp8-export-on-b200.md) (fp8 ONNX export needs ~128GB CPU RAM,
-  infeasible on the 121GB GB10).
+- **Precision (this run):** **bf16** LLM + fp16 visual. fp8 is deferred to a separate x86/B200
+  export (fp8 ONNX export needs ~128GB CPU RAM, infeasible on the 121GB GB10).
 
 ## Results
 
@@ -61,7 +60,6 @@ The harness drives the C++ `llm_inference` binary as a subprocess and parses its
 | `run_spec_all.sh` | orchestrate SD-off then SD-on |
 | `report_spec.py` | speedup/acceptance figures + markdown table |
 | `env.sh` | shell env for the TRT-Edge-LLM binaries (CUDA/TRT paths) |
-| `docs/fp8-export-on-b200.md` | handoff runbook for the fp8 export on an x86 B200 node |
 
 ## How to run
 

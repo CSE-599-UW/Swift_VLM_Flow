@@ -5,7 +5,7 @@
 export CUDA_HOME=/usr/local/cuda-13.0
 export PATH=$CUDA_HOME/bin:$PATH
 
-# Locally-extracted TensorRT 10.13.3.9 (no system install; see fp8-export-on-b200.md context)
+# Locally-extracted TensorRT 10.13.3.9 (no system install)
 export TRT_PACKAGE_DIR=$HOME/trt-10.13.3.9/usr
 
 # TensorRT-Edge-LLM checkout (built for sm_121)
