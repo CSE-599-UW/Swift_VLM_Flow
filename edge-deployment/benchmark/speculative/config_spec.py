@@ -15,9 +15,10 @@ PRECISION   = os.environ.get("SD_PRECISION", "bf16")   # bf16 on GB10; "fp8" onc
 # ── TensorRT-Edge-LLM paths (overridable via env.sh) ─────────────────────────
 EDGE_LLM_PATH = os.path.expanduser(os.environ.get("EDGE_LLM_PATH", "~/TensorRT-Edge-LLM"))
 WORKSPACE_DIR = os.path.expanduser(os.environ.get("WORKSPACE_DIR", "~/tensorrt-edgellm-workspace"))
-ENGINE_LLM_DIR    = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "llm")
-ENGINE_VISUAL_DIR = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "visual")
-LLM_INFERENCE_BIN = os.path.join(EDGE_LLM_PATH, "build", "examples", "llm", "llm_inference")
+ENGINE_LLM_DIR         = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "llm")          # EAGLE base+draft (SD-on)
+ENGINE_LLM_VANILLA_DIR = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "llm_vanilla")  # plain base (SD-off baseline)
+ENGINE_VISUAL_DIR      = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "visual")
+LLM_INFERENCE_BIN      = os.path.join(EDGE_LLM_PATH, "build", "examples", "llm", "llm_inference")
 
 # ── EAGLE3 / spec-decode params (llm_inference flags) ────────────────────────
 # Defaults match the SGLang config the Rayzl draft was trained with where sensible.

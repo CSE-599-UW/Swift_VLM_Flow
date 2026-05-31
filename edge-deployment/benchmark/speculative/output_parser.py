@@ -55,9 +55,11 @@ def parse_profile(profile_path: str, spec_decode: bool) -> dict:
         out["accepted_tokens"] = out["output_tokens"]  # accepted == generated in EAGLE
         tps = eg.get("overall_tokens_per_second_excluding_base_prefill", 0.0)
     else:
-        # vanilla generation section (key confirmed against a real SD-off profile)
+        # vanilla generation section (key "generation" with "generated_tokens",
+        # confirmed against a real SD-off profile from llm_vanilla)
         gen = p.get("generation", p.get("decode", {}))
-        out["output_tokens"] = int(gen.get("total_generated_tokens", 0))
+        out["output_tokens"] = int(gen.get("generated_tokens",
+                                            gen.get("total_generated_tokens", 0)))
         out["verify_steps"] = 0
         out["accepted_tokens"] = 0
         out["acceptance_length"] = 0.0
