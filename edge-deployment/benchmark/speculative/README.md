@@ -48,14 +48,17 @@ running its SD-off baseline on the **same** engine via `disable_spec_decode` —
 
 | Precision | SD-off (tok/s) | SD-on (tok/s) | Decode speedup |
 |---|---|---|---|
-| bf16 | 14.3 | 27.4 | **1.91×** |
+| bf16 | 14.7 | 27.4 | **1.86×** |
 | fp8 | 27.0 | 47.3 | **1.75×** |
 
-fp8 nearly halves VRAM and lifts SD-on throughput +72%, acceptance preserved. Its SD *speedup*
-is a touch lower than bf16's (1.75× vs 1.91×) because fp8 accelerates the memory-bound
-single-token base decode more than the compute-bound tree verification, shrinking SD's relative
-edge — notably **fp8 base-only (27.0) ≈ bf16+EAGLE (27.4)**. Report:
-`results/reports/report_fp8_vs_bf16_*/` (via `report_fp8_vs_bf16.py`).
+Both SD-off baselines here use the same-engine `disable_spec_decode` method (apples-to-apples).
+The bf16 same-engine baseline (14.7 tok/s) is within ~3% of the original two-engine vanilla
+baseline (14.3 tok/s → 1.91×, top table), confirming the method change is negligible. fp8 nearly
+halves VRAM and lifts SD-on throughput +72%, acceptance preserved. Its SD *speedup* is a touch
+lower than bf16's (1.75× vs 1.86×) because fp8 accelerates the memory-bound single-token base
+decode more than the compute-bound tree verification, shrinking SD's relative edge — notably
+**fp8 base-only (27.0) ≈ bf16+EAGLE (27.4)**. Report: `results/reports/report_fp8_vs_bf16_*/`
+(via `report_fp8_vs_bf16.py`).
 
 ## Pipeline
 

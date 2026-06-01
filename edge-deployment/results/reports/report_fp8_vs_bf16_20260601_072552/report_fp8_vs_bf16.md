@@ -19,7 +19,7 @@ LLaVA-Bench-in-the-Wild, 60 samples, greedy. fp8 = fp8 LLM (base + EAGLE3 draft)
 
 | Precision | SD-off (tok/s) | SD-on (tok/s) | Decode speedup |
 |---|---|---|---|
-| bf16 | 14.3 | 27.4 | **1.91× (measured)** |
+| bf16 | 14.7 | 27.4 | **1.86× (measured)** |
 | fp8 | 27.0 | 47.3 | **1.75× (measured)** |
 
-<sub>sources: bf16/SD-off=base_20260531_062204.json, bf16/SD-on=spec_20260531_063457.json, fp8/SD-off=base_20260601_061516_fp8.json, fp8/SD-on=spec_20260601_055943_fp8.json</sub>
+<sub>sources: bf16/SD-off=base_20260601_071244_bf16_sameengine.json, bf16/SD-on=spec_20260531_063457.json, fp8/SD-off=base_20260601_061516_fp8.json, fp8/SD-on=spec_20260601_055943_fp8.json</sub>
