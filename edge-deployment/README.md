@@ -6,6 +6,8 @@ Benchmarks Qwen2-VL-2B-Instruct across seven quantization tiers using TensorRT-L
 Measures **efficiency** (TTFT, decode latency, VRAM) and **accuracy** (VQAv2, POPE, MME)
 for the HuggingFace PyTorch baseline and six TRT engine precisions.
 
+**Final report**: [`results/reports/final_report.md`](results/reports/final_report.md)
+
 ---
 
 ## Hardware
@@ -52,12 +54,14 @@ bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant bf16
 bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int8
 bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int4
 bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant smoothquant
-bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant fp8
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant fp8 --no_kv_fp8
 bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int4_awq
 bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant nvfp4
 ```
 
 See [scripts/README.md](scripts/README.md) for build details and the OOM warning for Stage 3.
+
+> **FP8 note**: `--no_kv_fp8` is required for correct accuracy on Qwen2-VL. Using `--kv_cache_dtype fp8` (the default text-LLM recipe) causes severe accuracy regression (VQAv2 −8.8 pp) because visual token KV distributions exceed FP8's dynamic range. See §5.1 of the [final report](results/reports/final_report.md) for the ablation details.
 
 ### Step 5 — Run efficiency benchmark
 
@@ -80,6 +84,8 @@ cd /workspace/benchmark
 python3 report.py --latest
 # Output: results/reports/report_<timestamp>/report.md + img/*.png
 ```
+
+The final written report is at [`results/reports/final_report.md`](results/reports/final_report.md).
 
 ---
 
@@ -114,7 +120,7 @@ edge-deployment/
 | TRT INT8 | W8A16 | Pipeline A |
 | TRT INT4 | W4A16 | Pipeline A |
 | TRT SmoothQuant | W8A8 | Pipeline A |
-| TRT FP8 | W8A8 | Pipeline B (ModelOpt, Ada/Hopper/Blackwell) |
+| TRT FP8 | W8A8 | Pipeline B (ModelOpt, Ada/Hopper/Blackwell) — use `--no_kv_fp8` |
 | TRT INT4-AWQ | W4A16 | Pipeline B (ModelOpt) |
 | TRT NVFP4 | W4A8 | Pipeline B (ModelOpt, Blackwell only) |
 

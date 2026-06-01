@@ -27,6 +27,8 @@ accuracy/
 report.py                 →  charts + Markdown report
                                          ↓
                                results/reports/report_<timestamp>/report.md + img/*.png
+
+results/reports/final_report.md          ← final written report (paper format)
 ```
 
 ---
@@ -48,7 +50,7 @@ bash run_efficiency_all.sh --num_samples 28 --warmup 3 --max_new_tokens 256
 ```bash
 cd /workspace/benchmark/accuracy
 bash run_accuracy_all.sh                        # all tasks, baseline + TRT bf16
-bash run_accuracy_all.sh --quick                # smoke-test (vqa=20 / pope=30 / mme=50)
+bash run_accuracy_all.sh --quick                # smoke-test (vqa=20 / pope=30 / mme=50 samples)
 bash run_accuracy_all.sh --skip-trt             # HF baseline only
 ```
 

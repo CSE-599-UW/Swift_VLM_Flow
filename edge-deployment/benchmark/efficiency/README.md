@@ -42,9 +42,9 @@ Saves to: `results/efficiency/baseline/<run_id>[_<tag>].json`
 
 ```bash
 python3 run_benchmark_trt.py \
-    --engine_dir /workspace/trt_engines/qwen2vl_2b_fp8 \
+    --engine_dir /workspace/trt_engines/qwen2vl_2b_fp8_no_kv_fp8 \
     --precision  fp8 \
-    --output_tag fp8_v1
+    --output_tag no_kv_fp8
 ```
 
 Requires a pre-built TRT engine at `--engine_dir` (must contain `llm/` and `vision/` subdirs).
@@ -73,7 +73,7 @@ Engine directories expected under `/workspace/trt_engines/`:
 | `int8` | `qwen2vl_2b_int8` | W8A16 weight-only |
 | `int4` | `qwen2vl_2b_int4` | W4A16 weight-only |
 | `smoothquant` | `qwen2vl_2b_smoothquant` | W8A8 |
-| `fp8` | `qwen2vl_2b_fp8` | W8A8 FP8 |
+| `fp8` | `qwen2vl_2b_fp8_no_kv_fp8` | W8A8 FP8 (built with `--no_kv_fp8`) |
 | `int4_awq` | `qwen2vl_2b_int4_awq` | W4A16 AWQ |
 | `nvfp4` | `qwen2vl_2b_nvfp4` | W4A8 FP4, Blackwell only |
 
