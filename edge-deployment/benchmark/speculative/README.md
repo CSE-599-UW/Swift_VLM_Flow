@@ -11,8 +11,9 @@ autoregressively (**SD-off**) vs with the EAGLE3 draft (**SD-on**).
 
 - **Base:** `Qwen/Qwen2.5-VL-7B-Instruct`
 - **Draft (EAGLE3):** `Rayzl/qwen2.5-vl-7b-eagle3-sgl`
-- **Precision (this run):** **bf16** LLM + fp16 visual. fp8 is deferred to a separate x86/B200
-  export (fp8 ONNX export needs ~128GB CPU RAM, infeasible on the 121GB GB10).
+- **Precision:** two engine sets benchmarked — **bf16** (exported + built on the GB10) and
+  **fp8** LLM + fp16 visual (fp8 quantize/export done on an 8×B200 node — needs ~128GB CPU RAM,
+  infeasible on the 121GB GB10 — then built into `engines_fp8/` on the GB10). fp8 results below.
 
 ## Results
 
@@ -32,10 +33,29 @@ EAGLE3 speculative decoding delivers a **1.91× decode speedup** on Qwen2.5-VL-7
 GB10 — at essentially no extra VRAM (the 1-layer draft shares the base embedding table).
 
 **Output parity (SD-on vs SD-off):** all 60 responses share identical openings; 18/60 exact,
-mean text similarity 0.774. Divergences come from SD-on and SD-off using two *separately built*
-TensorRT engines (EAGLE base vs vanilla) whose kernel/precision choices differ slightly, so a
-single greedy token flip cascades — not from EAGLE being lossy. A same-engine check isn't
-possible because the EAGLE base engine cannot run in vanilla mode.
+mean text similarity 0.774. Divergences come from this bf16 SD-on/SD-off pair using two
+*separately built* TensorRT engines (EAGLE base vs vanilla) whose kernel choices differ slightly,
+so a single greedy token flip cascades — not from EAGLE being lossy. (The fp8 run avoids this by
+running its SD-off baseline on the **same** engine via `disable_spec_decode` — see note 5.)
+
+**fp8 (8×B200-exported ONNX, built + benchmarked on the GB10):**
+
+| Metric | bf16 SD-on | fp8 SD-on | Δ |
+|---|---|---|---|
+| Decode throughput (tok/s) | 27.4 | 47.3 | **+72%** |
+| Acceptance length (tok/step) | 2.53 | 2.56 | preserved |
+| Peak VRAM (GB) | 13.66 | 7.55 | **−45%** |
+
+| Precision | SD-off (tok/s) | SD-on (tok/s) | Decode speedup |
+|---|---|---|---|
+| bf16 | 14.3 | 27.4 | **1.91×** |
+| fp8 | 27.0 | 47.3 | **1.75×** |
+
+fp8 nearly halves VRAM and lifts SD-on throughput +72%, acceptance preserved. Its SD *speedup*
+is a touch lower than bf16's (1.75× vs 1.91×) because fp8 accelerates the memory-bound
+single-token base decode more than the compute-bound tree verification, shrinking SD's relative
+edge — notably **fp8 base-only (27.0) ≈ bf16+EAGLE (27.4)**. Report:
+`results/reports/report_fp8_vs_bf16_*/` (via `report_fp8_vs_bf16.py`).
 
 ## Pipeline
 
@@ -58,7 +78,8 @@ The harness drives the C++ `llm_inference` binary as a subprocess and parses its
 | `spec_metrics.py` | speedup + acceptance helpers (reuses `efficiency/metrics.aggregate`) |
 | `run_spec_trt_edge.py` | runner: load LLaVA-Bench → run llm_inference → emit JSON |
 | `run_spec_all.sh` | orchestrate SD-off then SD-on |
-| `report_spec.py` | speedup/acceptance figures + markdown table |
+| `report_spec.py` | speedup/acceptance figures + markdown table (same-precision SD-on vs SD-off) |
+| `report_fp8_vs_bf16.py` | cross-precision comparison (fp8 vs bf16) + figure |
 | `env.sh` | shell env for the TRT-Edge-LLM binaries (CUDA/TRT paths) |
 
 ## How to run
@@ -81,7 +102,15 @@ python -m pytest tests/ -q
 Single mode:
 ```bash
 python run_spec_trt_edge.py --num_samples 60 --spec_decode      # EAGLE3
-python run_spec_trt_edge.py --num_samples 60 --no-spec_decode   # vanilla baseline
+python run_spec_trt_edge.py --num_samples 60 --no-spec_decode   # vanilla baseline (separate engine)
+```
+
+fp8 (engines built from the B200-exported ONNX in `engines_fp8/`; selected via `SD_PRECISION=fp8`):
+```bash
+SD_PRECISION=fp8 python run_spec_trt_edge.py --num_samples 60 --spec_decode --output_tag fp8
+# SD-off baseline on the SAME eagle engine (no vanilla fp8 engine needed):
+SD_PRECISION=fp8 python run_spec_trt_edge.py --num_samples 60 --no-spec_decode --baseline_via_eagle --output_tag fp8
+python report_fp8_vs_bf16.py        # fp8-vs-bf16 table + figure
 ```
 
 ## Metrics
@@ -113,6 +142,12 @@ whole pipeline on one **GB10**:
 3. **Export** runs in a separate `trt-export` venv with the pinned stack (`torch==2.10`,
    `transformers==5.3`, etc.) on **CPU** (bf16 needs no GPU calibration), because the GB10's
    sm_121 needs torch 2.12 which conflicts with the export pins.
-4. **SD-off baseline** required a separately-built **vanilla** engine (`engines/llm_vanilla`,
-   no `--specBase`) — the EAGLE base engine cannot decode in vanilla mode (its tree-verification
-   input bindings aren't set), which the page's SD-only example doesn't cover.
+4. **SD-off baseline (bf16)** used a separately-built **vanilla** engine (`engines/llm_vanilla`,
+   no `--specBase`). Building a vanilla engine from the `--eagle-base` ONNX fails (`attention_pos_id`
+   has no dims in a non-spec profile), so bf16 exported a fresh non-eagle base ONNX for it.
+5. **fp8** is quantized/exported on an x86 **8×B200** node (fp8 export needs ~128GB CPU RAM); the
+   portable ONNX is built into `engines_fp8/` on the GB10. For its SD-off baseline we skip the
+   vanilla engine entirely and run the **same** eagle engine with per-request `disable_spec_decode`
+   (`run_spec_trt_edge.py --no-spec_decode --baseline_via_eagle`) — a cleaner same-engine baseline
+   (no cross-engine drift). In that mode decode timing is reported under the `llm_generation` stage
+   (no `eagle_generation`/`generation` section), which `output_parser.py` handles.
