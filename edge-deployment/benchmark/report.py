@@ -85,7 +85,8 @@ INPUT_JSONS = [
     # "../results/efficiency/trt/bf16_20260528_085459_bf16_v1.json",
     "../results/efficiency/trt/bf16_20260531_214526_bf16_v2.json",
     # "../results/efficiency/trt/fp8_20260528_085545_fp8_v1.json",
-    "../results/efficiency/trt/fp8_20260531_214912_fp8_v2.json",
+    # "../results/efficiency/trt/fp8_20260531_214912_fp8_v2.json",  # misconfigured (kv_cache_dtype fp8)
+    "../results/efficiency/trt/fp8_20260601_180232_no_kv_fp8.json",
     # "../results/efficiency/trt/int8_20260528_085621_int8_v1.json",
     "../results/efficiency/trt/int8_20260531_214641_int8_v2.json",
     # "../results/efficiency/trt/int4_20260528_085659_int4_v1.json",
@@ -98,14 +99,16 @@ INPUT_JSONS = [
     # "../results/accuracy/trt/bf16_20260528_044749.json",
     "../results/accuracy/trt/bf16_20260531_225452.json",
     # "../results/accuracy/trt/fp8_20260529_043513.json",
-    "../results/accuracy/trt/fp8_20260601_012129.json",
+    # "../results/accuracy/trt/fp8_20260601_012129.json",      # misconfigured (kv_cache_dtype fp8) — excluded from main comparison
+    # "../results/accuracy/trt/fp8_20260601_080726_no_fmha.json",
+    "../results/accuracy/trt/fp8_20260601_171455_no_kv_fp8.json",
     # "../results/accuracy/trt/int8_20260528_181038.json",
     "../results/accuracy/trt/int8_20260531_233156.json",
     # "../results/accuracy/trt/int4_20260528_235602.json",
     "../results/accuracy/trt/int4_20260531_234747.json",
     # "../results/accuracy/trt/int4_20260528_063759.json", # awq
     "../results/accuracy/trt/int4_awq_20260601_000351.json",
-    # "../results/accuracy/trt/smoothquant_<run_id>.json",
+    "../results/accuracy/trt/smoothquant_20260601_015244.json",
     # "../results/accuracy/trt/nvfp4_<run_id>.json",
     "../results/accuracy/trt/nvfp4_20260601_013737.json",
 ]
@@ -118,7 +121,9 @@ TIER_ORDER = [
     "trt-int8",
     "trt-int4",
     "trt-smoothquant",
-    "trt-fp8",
+    "trt-fp8-no-kv-fp8", # FP8 (corrected) — canonical FP8 result
+    "trt-fp8",           # FP8 (misconfigured) — kept for ablation figure only
+    "trt-fp8-no-fmha",   # ablation: fp8 without --use_fp8_context_fmha
     "trt-int_awq",
     "trt-nvfp4",
 ]
@@ -130,6 +135,8 @@ TIER_COLORS = {
     "trt-int4":        "#993C1D",   # coral
     "trt-smoothquant": "#A83060",   # rose
     "trt-fp8":         "#0F6E56",   # teal
+    "trt-fp8-no-fmha": "#5BAF96",   # light teal  – ablation: no FMHA
+    "trt-fp8-no-kv-fp8": "#A8D5C2", # pale teal   – ablation: no KV FP8
     "trt-int_awq":     "#533AB7",   # purple
     "trt-nvfp4":       "#1A6B8A",   # dark cyan
 }
@@ -140,8 +147,10 @@ TIER_LABELS = {
     "trt-int8":        "TRT INT8",
     "trt-int4":        "TRT INT4",
     "trt-smoothquant": "TRT SmoothQuant",
-    "trt-fp8":         "TRT FP8",
-    "trt-int_awq":     "TRT INT4-AWQ",
+    "trt-fp8-no-kv-fp8": "TRT FP8",
+    "trt-fp8":           "TRT FP8 (misconfigured)",
+    "trt-fp8-no-fmha":   "TRT FP8 (no FMHA)",
+    "trt-int_awq":       "TRT INT4-AWQ",
     "trt-nvfp4":       "TRT NVFP4",
 }
 
@@ -171,6 +180,11 @@ def tier_key(config: dict) -> str:
         # AWQ engine without explicit precision: detect via engine_dir path
         if prec == "int4" and "awq" in engine_dir:
             prec = "int_awq"
+        # FP8 ablation variants: detect via engine_dir suffix
+        if prec == "fp8" and "no_fmha" in engine_dir:
+            prec = "fp8-no-fmha"
+        elif prec == "fp8" and "no_kv_fp8" in engine_dir:
+            prec = "fp8-no-kv-fp8"
         return f"trt-{prec}"
     # fallback
     return f"{backend}-{precision}" if precision else backend
@@ -505,6 +519,106 @@ def fig_tradeoff(eff_runs, acc_runs, img_dir):
     return path
 
 
+_BROKEN_FP8_JSON = Path(__file__).parent / "../results/accuracy/trt/fp8_20260601_012129.json"
+
+def fig_fp8_ablation(acc_runs, img_dir):
+    """
+    Grouped bar: FP8 ablation study.
+    Compares PyTorch BF16 / TRT INT8 / TRT FP8 (broken) / TRT FP8 (fixed).
+    Loads the broken FP8 JSON directly so it need not be in INPUT_JSONS
+    (keeping it out of the main comparison charts).
+    """
+    required = {"pytorch-bf16", "trt-fp8-no-kv-fp8"}
+    if not required.issubset(acc_runs.keys()):
+        return None
+
+    # Inject the misconfigured FP8 result for the ablation comparison only.
+    ablation_runs = dict(acc_runs)
+    if "trt-fp8" not in ablation_runs and _BROKEN_FP8_JSON.exists():
+        with open(_BROKEN_FP8_JSON) as f:
+            d = json.load(f)
+        r = d.get("results", {})
+        vqa  = r.get("vqa",  {}).get("scores", {})
+        pope = r.get("pope", {}).get("scores", r.get("pope", {}))
+        mme  = r.get("mme",  {}).get("scores", {})
+        ablation_runs["trt-fp8"] = {
+            "vqa_acc":      vqa.get("accuracy"),
+            "pope_avg_f1":  pope.get("avg_f1"),
+            "pope_avg_acc": pope.get("avg_accuracy"),
+            "mme_total":    mme.get("total_score"),
+            "config":       d.get("config", {}),
+        }
+
+    if "trt-fp8" not in ablation_runs:
+        return None
+
+    ablation_tiers = [
+        "pytorch-bf16",
+        "trt-int8",
+        "trt-fp8",
+        "trt-fp8-no-kv-fp8",
+    ]
+    ablation_tiers = [t for t in ablation_tiers if t in ablation_runs]
+    acc_runs = ablation_runs  # shadow for the rest of the function
+
+    panels = [
+        ("vqa_acc",     "VQAv2 Accuracy (%)", 70, 100),
+        ("pope_avg_f1", "POPE Avg F1 (%)",    83, 92),
+        ("mme_total",   "MME Total Score",    1700, 2050),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
+    fig.subplots_adjust(wspace=0.38)
+    fig.suptitle("FP8 Ablation: Effect of KV Cache Quantization",
+                 fontsize=12, fontweight="bold", y=1.02)
+
+    x = np.arange(len(ablation_tiers))
+    width = 0.6
+
+    for ax, (key, title, ymin, ymax) in zip(axes, panels):
+        vals   = [acc_runs[t].get(key) for t in ablation_tiers]
+        colors = [tier_color(t) for t in ablation_tiers]
+        bars   = ax.bar(x, [v if v is not None else 0 for v in vals],
+                        width=width, color=colors, zorder=3,
+                        edgecolor="#3d3d3a", linewidth=0.5)
+
+        # Highlight the two FP8 bars with a bracket / annotation
+        fp8_idx     = ablation_tiers.index("trt-fp8")       if "trt-fp8"           in ablation_tiers else None
+        fp8fix_idx  = ablation_tiers.index("trt-fp8-no-kv-fp8") if "trt-fp8-no-kv-fp8" in ablation_tiers else None
+        if fp8_idx is not None and fp8fix_idx is not None and vals[fp8_idx] and vals[fp8fix_idx]:
+            delta = vals[fp8fix_idx] - vals[fp8_idx]
+            mid_x = (fp8_idx + fp8fix_idx) / 2
+            top_y = max(vals[fp8_idx], vals[fp8fix_idx])
+            sign  = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
+            suffix = "%" if key != "mme_total" else ""
+            ax.annotate(
+                f"fix: {sign}{suffix}",
+                xy=(mid_x, top_y),
+                xytext=(mid_x, top_y + (ymax - ymin) * 0.06),
+                ha="center", fontsize=8.5, color="#0F6E56", fontweight="bold",
+                arrowprops=None,
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier_label(t) for t in ablation_tiers],
+                           rotation=18, ha="right", fontsize=9)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.set_ylim(ymin, ymax)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
+
+        for bar, v in zip(bars, vals):
+            if v is not None:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + (ymax - ymin) * 0.008,
+                        f"{v:.1f}" if key != "mme_total" else f"{v:.0f}",
+                        ha="center", va="bottom", fontsize=8)
+
+    path = img_dir / "fig_fp8_ablation.png"
+    savefig(fig, path)
+    return path
+
+
 # ───────────────────────────── markdown table ──────────────────────────────
 def build_table(eff_runs, acc_runs):
     all_tiers = sorted_tiers(set(eff_runs) | set(acc_runs))
@@ -566,6 +680,10 @@ def build_report(eff_runs, acc_runs, img_dir, output_dir):
     if eff_runs and acc_runs:
         p = fig_tradeoff(eff_runs, acc_runs, img_dir)
         if p: imgs["tradeoff"] = p
+
+    if acc_runs:
+        p = fig_fp8_ablation(acc_runs, img_dir)
+        if p: imgs["fp8_ablation"] = p
 
     def img_link(key, alt):
         if key in imgs:
@@ -636,6 +754,14 @@ def build_report(eff_runs, acc_runs, img_dir, output_dir):
         lines.append("X-axis: total end-to-end latency (TTFT + decode latency × mean output tokens). "
                      "Each point is one quantization tier. Bubble size scales with static VRAM.\n")
         lines.append(img_link("tradeoff", "Accuracy–Latency Tradeoff"))
+        lines.append("")
+
+    # ── FP8 ablation ──
+    if "fp8_ablation" in imgs:
+        lines.append("## FP8 Ablation: KV Cache Quantization\n")
+        lines.append("Accuracy comparison isolating the effect of `--kv_cache_dtype fp8`. "
+                     "Removing FP8 KV cache fully restores accuracy while preserving decode speed.\n")
+        lines.append(img_link("fp8_ablation", "FP8 Ablation"))
         lines.append("")
 
     # ── Per-task MME detail ──

@@ -4,16 +4,16 @@
 
 ## Results Summary
 
-| Tier | TTFT (ms) | Decode (ms/tok) | Static VRAM (GB) | Dyn VRAM (GB) | VQAv2 (%) | POPE F1 (%) | MME Total |
-|---|---|---|---|---|---|---|---|
-| **PyTorch BF16** | 171.9 ±47.0 | 17.7 ±9.9 | 4.12 | 0.174 ±0.036 | 82.3 | 87.4 | 1952 |
-| **TRT BF16** | 105.3 ±21.0 (1.63×) | 12.1 ±6.3 (1.47×) | 6.13 | 0.810 ±0.001 | 82.3 | 88.0 | 1972 |
-| **TRT INT8** | 105.0 ±21.3 (1.64×) | 8.7 ±6.5 (2.05×) | 5.06 | 0.791 ±0.001 | 82.0 | 87.5 | 1959 |
-| **TRT INT4** | 102.4 ±21.3 (1.68×) | 7.4 ±6.3 (2.39×) | 4.51 | 0.791 ±0.002 | 79.1 | 87.0 | 1921 |
-| **TRT SmoothQuant** | 86.0 ±18.5 (2.00×) | 8.3 ±5.1 (2.13×) | 5.06 | 0.789 ±0.001 | 82.8 | 87.4 | 1973 |
-| **TRT FP8** | 91.2 ±15.9 (1.89×) | 7.7 ±2.8 (2.29×) | 5.05 | 0.799 ±0.001 | 73.5 | 86.6 | 1763 |
-| **TRT INT4-AWQ** | 104.7 ±21.6 (1.64×) | 7.4 ±6.5 (2.41×) | 4.52 | 0.793 ±0.014 | 81.3 | 89.5 | 1862 |
-| **TRT NVFP4** | 80.9 ±17.0 (2.12×) | 7.3 ±4.7 (2.42×) | 4.19 | 0.734 ±0.001 | 81.6 | 86.4 | 1938 |
+| Tier | W×A | TTFT (ms) | Decode (ms/tok) | Static VRAM (GB) | Dyn VRAM (GB) | VQAv2 (%) | POPE F1 (%) | MME Total |
+|---|---|---|---|---|---|---|---|---|
+| **PyTorch BF16** | W16A16 | 171.9 ±47.0 | 17.7 ±9.9 | 4.12 | 0.174 ±0.036 | 82.3 | 87.4 | 1952 |
+| **TRT BF16** | W16A16 | 105.3 ±21.0 (1.63×) | 12.1 ±6.3 (1.47×) | 6.13 | 0.810 ±0.001 | 82.3 | 88.0 | 1972 |
+| **TRT INT8** | W8A16 | 105.0 ±21.3 (1.64×) | 8.7 ±6.5 (2.05×) | 5.06 | 0.791 ±0.001 | 82.0 | 87.5 | 1959 |
+| **TRT INT4** | W4A16 | 102.4 ±21.3 (1.68×) | 7.4 ±6.3 (2.39×) | 4.51 | 0.791 ±0.002 | 79.1 | 87.0 | 1921 |
+| **TRT SmoothQuant** | W8A8 | 86.0 ±18.5 (2.00×) | 8.3 ±5.1 (2.13×) | 5.06 | 0.789 ±0.001 | 82.8 | 87.4 | 1973 |
+| **TRT FP8** | W8A8 | 91.2 ±15.9 (1.89×) | 7.7 ±2.8 (2.29×) | 5.05 | 0.799 ±0.001 | 73.5 | 86.6 | 1763 |
+| **TRT INT4-AWQ** | W4A16 | 104.7 ±21.6 (1.64×) | 7.4 ±6.5 (2.41×) | 4.52 | 0.793 ±0.014 | 81.3 | 89.5 | 1862 |
+| **TRT NVFP4** | W4A8 | 80.9 ±17.0 (2.12×) | 7.3 ±4.7 (2.42×) | 4.19 | 0.734 ±0.001 | 81.6 | 86.4 | 1938 |
 
 ## Speed
 
@@ -77,3 +77,110 @@ X-axis: total end-to-end latency (TTFT + decode latency × mean output tokens). 
 - **TRT FP8**: avg F1 = 86.6%, avg acc = 87.73
 - **TRT INT4-AWQ**: avg F1 = 89.5%, avg acc = 89.8
 - **TRT NVFP4**: avg F1 = 86.4%, avg acc = 87.67
+
+---
+
+## Result Analysis
+
+### Speed
+
+**TTFT (prefill latency)** improvements are driven primarily by TensorRT graph optimization — all TRT tiers cluster tightly between 80–106 ms, regardless of quantization level. TRT NVFP4 is fastest at 80.9 ms (**2.12×**), followed by SmoothQuant at 86.0 ms (2.00×). The narrow spread across INT8/INT4/INT4-AWQ/BF16 (102–106 ms) indicates that prefill is **compute-bound**, so precision compression yields diminishing TTFT returns beyond what operator fusion already provides.
+
+**Decode latency** is more sensitive to quantization because decode is **memory-bandwidth-bound**: each step loads the full weight matrix for a single token. The gradient is clear — 4-bit methods (INT4, INT4-AWQ, NVFP4) achieve **2.39–2.42×** speedup, FP8/SmoothQuant land at **2.13–2.29×**, INT8 at 2.05×, and TRT BF16 at only 1.47× (which represents the pure graph-fusion floor). The 4-bit tiers deliver ~1.6× additional decode speedup over TRT BF16, consistent with the 2× theoretical memory-bandwidth reduction from halving weight precision.
+
+### Memory
+
+**Static VRAM** shows a counter-intuitive pattern: TRT BF16 consumes 6.13 GB — more than any other tier including PyTorch BF16 (4.12 GB). This is because TRT pre-allocates activation buffers and optimization profiles at build time; BF16 activations are wide, so the static footprint is larger. NVFP4 (4.19 GB) is the most memory-efficient TRT tier, nearly matching PyTorch BF16, because its 4-bit weight compression offsets the TRT overhead.
+
+**Dynamic VRAM** for all TRT tiers (~0.79–0.81 GB) is roughly **4.5× higher** than PyTorch (0.174 GB). This stems from TRT's workspace pre-allocation mechanism and is a fixed cost per inference session independent of quantization level. For edge deployments with strict VRAM budgets this overhead should be factored in alongside static footprint.
+
+### Accuracy
+
+TRT BF16, INT8, and SmoothQuant are effectively **lossless** versus PyTorch BF16 across all three benchmarks. SmoothQuant even edges out the baseline slightly on VQAv2 (+0.5 pp) and MME (+21), likely because W8A8 quantization introduces a mild regularization effect. INT4 and INT4-AWQ show acceptable average degradation (≤ 1.2 pp VQAv2) but exhibit task-specific weaknesses discussed below.
+
+| Tier | VQAv2 Δ | MME Δ | Assessment |
+|---|---|---|---|
+| TRT BF16 | 0.0 pp | +20 | Lossless |
+| TRT INT8 | −0.3 pp | +7 | Near-lossless |
+| TRT SmoothQuant | **+0.5 pp** | +21 | Lossless, slight uplift |
+| TRT INT4 | −1.2 pp | −31 | Minor degradation |
+| TRT INT4-AWQ | −1.0 pp | −90 | Minor degradation (anomaly present) |
+| TRT NVFP4 | −0.7 pp | −14 | Minor degradation (reasoning tasks) |
+| TRT FP8 | **−8.8 pp** | **−189** | **Severe degradation** |
+
+### Tier Recommendation Summary
+
+| Tier | Speed | Accuracy | VRAM | Best For |
+|---|---|---|---|---|
+| TRT BF16 | ++ | ✓ | −− | High-accuracy, VRAM-unconstrained |
+| TRT INT8 | +++ | ✓ | + | Safe, general-purpose deployment |
+| **TRT SmoothQuant** | ++++ | **✓+** | + | **Best accuracy–speed balance** |
+| TRT INT4 | +++++ | + | ++ | Speed-first, accuracy secondary |
+| TRT INT4-AWQ | +++++ | + | ++ | Speed-first (avoid translation tasks) |
+| TRT NVFP4 | +++++ | + | ✓ | Fastest + smallest footprint (Blackwell only) |
+| TRT FP8 | ++++ | ✗ | + | **Not recommended (accuracy anomaly)** |
+
+---
+
+## Problem Discussion
+
+### Issue 1 — FP8 Severe Accuracy Degradation ✅ Root Cause Identified
+
+FP8 VQAv2 accuracy (73.5%) is **8.8 pp below** the PyTorch BF16 baseline, and MME total score drops by **189 points (−9.7%)**. The worst-affected MME tasks are `landmark` (91.0% → 79.5%, −11.5 pp) and `posters` (85.4% → 72.1%, −13.3 pp).
+
+#### Ablation results
+
+Two ablations were run to isolate the cause, testing one variable at a time:
+
+| Ablation | Change | VQAv2 | POPE F1 | MME | Conclusion |
+|---|---|---|---|---|---|
+| **Test 1** | Remove `--use_fp8_context_fmha` (Stage 2 rebuild only) | 73.5% | 86.6% | 1763 | **No change** — FMHA kernel ruled out |
+| **Test 2** | Remove `--kv_cache_dtype fp8` (fresh Stage 1) | **82.0%** | **87.8%** | **1946** | **Fully recovered** — KV cache FP8 is the culprit |
+
+#### Root cause: FP8 KV cache quantization
+
+Removing `--kv_cache_dtype fp8` from `quantize.py` while keeping FP8 weights and activations (`--qformat fp8`) brings every metric back within 1 pp of the PyTorch BF16 baseline. This confirms that **the FP8 GEMM (weight/activation) layers are not the problem** — they quantize cleanly. The degradation is entirely caused by the KV cache being stored in FP8.
+
+Why does FP8 KV cache hurt this model disproportionately? The Qwen2-VL KV cache carries visual token representations (cross-attention keys and values from the vision encoder). Visual tokens have a wider and more irregular activation distribution than text tokens. Quantizing these to FP8 E4M3 (dynamic range ±448) introduces enough rounding error in the attention score computation to significantly corrupt visual understanding tasks — particularly texture-rich recognition tasks like `landmark`, `posters`, and `celebrity`, which depend on fine-grained feature matching across many attention heads.
+
+#### Fix
+
+Do not use `--kv_cache_dtype fp8` for Qwen2-VL models. Drop the flag from the `quantize.py` invocation; the KV cache will default to BF16. The build script now supports this via `--no_kv_fp8`:
+
+```bash
+bash build_trt_engines.sh --model qwen2vl_2b --quant fp8 --no_kv_fp8
+```
+
+The FP8 (no KV FP8) configuration achieves **VQAv2 82.0%, POPE F1 87.8%, MME 1946** — essentially on par with TRT INT8 at 2.29× decode speedup.
+
+### Issue 2 — INT4-AWQ `text_translation` Catastrophic Drop
+
+INT4-AWQ `text_translation` collapses from 90.0% to **62.5%** (−27.5 pp), while all other sub-tasks degrade by at most 2–3 pp. Plain INT4 (without AWQ) scores 85.0% on the same task — a much smaller drop — which rules out 4-bit weight quantization per se as the cause and points to the **AWQ calibration procedure** as the source of the anomaly.
+
+Probable causes:
+
+1. **Calibration data lacks multilingual text**: AWQ computes per-channel importance scores (salient weight identification) from activation statistics over the calibration corpus. If the calibration set contains little multilingual or translation-style text, AWQ will under-protect the embedding channels that encode non-English tokens, concentrating quantization error precisely in the rows needed for translation.
+2. **Group-wise quantization misalignment on multilingual embeddings**: AWQ's group quantization may clip a cluster of source-language token embeddings into an adjacent cluster, causing the model to hallucinate the wrong output language on translation prompts.
+
+**Suggested debugging steps**:
+- Rebuild the AWQ engine with a multilingual calibration set and re-evaluate `text_translation`.
+- Analyze failure-mode outputs: if the model generates the source language verbatim or switches to an unrelated language, this confirms embedding cluster collapse.
+- Compare AWQ vs. non-AWQ INT4 on the translation task systematically across languages to determine scope.
+
+### Issue 3 — NVFP4 Reasoning Task Degradation
+
+TRT NVFP4 shows disproportionate accuracy drops on reasoning-heavy sub-tasks: `commonsense_reasoning` falls from 71.4% to **57.9%** (−13.5 pp) and `code_reasoning` from 65.0% to **52.5%** (−12.5 pp). In contrast, visual perception tasks (color, existence, position) degrade by only 1–3 pp, similar to INT4.
+
+NVFP4 is the most aggressive compression scheme tested (W4A8: FP4 weights + FP8 activations), effectively ~4.5 bits/weight. Reasoning tasks require multi-hop consistency across many attention layers; the accumulated numerical error from FP4 weight quantization is more damaging in this regime than in single-step visual recognition tasks.
+
+**Suggested mitigation**:
+- Apply mixed-precision NVFP4, keeping the final few LLM layers (which carry the most task-discriminative representations) at higher precision (BF16 or FP8).
+- Compare against INT4-AWQ on the same reasoning tasks (code_reasoning: 62.5%, commonsense: 68.6%) to confirm the NVFP4 regression is additive on top of generic 4-bit loss.
+
+### Issue 4 — TRT Dynamic VRAM Overhead
+
+All TRT tiers show dynamic VRAM of ~0.79–0.81 GB, approximately **4.5× the PyTorch baseline** of 0.174 GB — and this overhead is nearly identical across all quantization levels. This indicates the overhead originates from TRT's fixed-size workspace allocation rather than from model activations. On an edge device such as the RTX 5060 Ti (16 GB), this is not a blocker, but it could matter if multiple inference sessions run concurrently or alongside other resident processes.
+
+**Possible mitigations**:
+- At engine build time, tighten the `--opt_profile` upper bounds on batch size and sequence length to reduce worst-case workspace pre-allocation.
+- Profile `--max_batch_size 1` and `--max_input_len` set to the actual maximum used in production to see if workspace shrinks proportionally.

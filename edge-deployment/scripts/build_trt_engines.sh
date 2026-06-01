@@ -32,6 +32,8 @@ set -euo pipefail
 # ── Defaults ──────────────────────────────────────────────────────
 MODEL="qwen2vl_2b"
 QUANT="bf16"
+NO_FP8_FMHA=false    # Test 1: rebuild Stage 2 without --use_fp8_context_fmha
+NO_KV_FP8=false      # Test 2: drop --kv_cache_dtype fp8 (RECOMMENDED for Qwen2-VL — FP8 KV cache causes -8.8pp VQAv2)
 
 # ── Parse args ────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -43,6 +45,14 @@ while [[ $# -gt 0 ]]; do
     --quant)
       QUANT="$2"
       shift 2
+      ;;
+    --no_fp8_fmha)
+      NO_FP8_FMHA=true
+      shift
+      ;;
+    --no_kv_fp8)
+      NO_KV_FP8=true
+      shift
       ;;
     --help|-h)
       sed -n '2,30p' "$0" | sed 's/^# \?//'
@@ -104,6 +114,45 @@ esac
 MODEL_PATH="/workspace/models/${HF_MODEL_NAME}"
 ENGINE_DIR="/workspace/trt_engines/${MODEL}_${QUANT}"
 TRTLLM_ROOT="/app/tensorrt_llm"
+
+# Ablation path setup — all ablation flags require --quant fp8.
+ORIG_FP8_DIR="/workspace/trt_engines/${MODEL}_fp8"
+SKIP_STAGE1=false
+SKIP_STAGE3=false   # when true, symlink vision from ORIG_FP8_DIR
+
+if [ "$NO_FP8_FMHA" = "true" ] && [ "$NO_KV_FP8" = "true" ]; then
+  echo "ERROR: --no_fp8_fmha and --no_kv_fp8 cannot be combined"
+  exit 1
+fi
+
+if [ "$NO_FP8_FMHA" = "true" ]; then
+  if [ "$QUANT" != "fp8" ]; then
+    echo "ERROR: --no_fp8_fmha is only valid with --quant fp8"; exit 1
+  fi
+  if [ ! -d "$ORIG_FP8_DIR/checkpoint" ]; then
+    echo "ERROR: Original FP8 checkpoint not found at $ORIG_FP8_DIR/checkpoint"
+    echo "  Build the baseline FP8 engine first (without --no_fp8_fmha), then re-run."
+    exit 1
+  fi
+  ENGINE_DIR="${ORIG_FP8_DIR}_no_fmha"
+  CHECKPOINT_DIR="$ORIG_FP8_DIR/checkpoint"   # reuse; skip Stage 1
+  SKIP_STAGE1=true
+  SKIP_STAGE3=true
+elif [ "$NO_KV_FP8" = "true" ]; then
+  if [ "$QUANT" != "fp8" ]; then
+    echo "ERROR: --no_kv_fp8 is only valid with --quant fp8"; exit 1
+  fi
+  if [ ! -f "$ORIG_FP8_DIR/vision/model.engine" ]; then
+    echo "ERROR: Original FP8 vision engine not found at $ORIG_FP8_DIR/vision/model.engine"
+    echo "  Build the baseline FP8 engine first (without --no_kv_fp8), then re-run."
+    exit 1
+  fi
+  ENGINE_DIR="${ORIG_FP8_DIR}_no_kv_fp8"
+  CHECKPOINT_DIR="$ENGINE_DIR/checkpoint"   # fresh Stage 1 needed
+  SKIP_STAGE3=true   # vision is always BF16; symlink from original
+else
+  CHECKPOINT_DIR="$ENGINE_DIR/checkpoint"
+fi
 MULTIMODAL_BUILDER="/usr/local/lib/python3.12/dist-packages/tensorrt_llm/tools/multimodal_builder.py"
 QUANTIZE_SCRIPT="$TRTLLM_ROOT/examples/quantization/quantize.py"
 
@@ -112,6 +161,12 @@ echo "================================================="
 echo " Model             : $HF_MODEL_NAME"
 echo " Quantization      : $QUANT"
 echo " Engine output dir : $ENGINE_DIR"
+echo " Checkpoint src    : $CHECKPOINT_DIR"
+if [ "$NO_FP8_FMHA" = "true" ]; then
+echo " Ablation          : --no_fp8_fmha (Stage 1 + Stage 3 skipped)"
+elif [ "$NO_KV_FP8" = "true" ]; then
+echo " Ablation          : --no_kv_fp8   (Stage 3 symlinked; fresh Stage 1)"
+fi
 echo "================================================="
 
 # ── Validate environment ──────────────────────────────────────────
@@ -136,6 +191,10 @@ echo "================================================="
 echo " Stage 1/3: Converting HF checkpoint → TRT-LLM"
 echo " Pipeline $PIPELINE / quant=$QUANT"
 echo "================================================="
+
+if [ "$SKIP_STAGE1" = "true" ]; then
+  echo "  [SKIP] reusing checkpoint at $CHECKPOINT_DIR"
+else
 
 case "$QUANT" in
 
@@ -187,12 +246,17 @@ case "$QUANT" in
     # Weight: FP8 / Activation: FP8 (W8A8)
     # 需要 Ada Lovelace (RTX 4000) 或更新 GPU → RTX 5060 Ti ✅
     # --calib_size 512: calibration 用的樣本數，越大越準但越慢
+    FP8_KV_FLAG="--kv_cache_dtype fp8"
+    if [ "$NO_KV_FP8" = "true" ]; then
+      FP8_KV_FLAG=""   # Test 2: keep FP8 weights/activations, revert KV cache to BF16
+    fi
+    # shellcheck disable=SC2086
     python3 "$QUANTIZE_SCRIPT" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
       --dtype bfloat16 \
       --qformat fp8 \
-      --kv_cache_dtype fp8 \
+      $FP8_KV_FLAG \
       --calib_size 512
     ;;
 
@@ -224,6 +288,8 @@ esac
 
 echo "✓ Stage 1 done: $ENGINE_DIR/checkpoint/"
 
+fi  # end NO_FP8_FMHA skip
+
 # ══════════════════════════════════════════════════════════════════
 #  STAGE 2 — Build LLM decoder engine
 # ══════════════════════════════════════════════════════════════════
@@ -239,7 +305,11 @@ EXTRA_FLAGS=""
 case "$QUANT" in
   fp8)
     GEMM_PLUGIN="fp8"
-    EXTRA_FLAGS="--use_fp8_context_fmha=enable"
+    if [ "$NO_FP8_FMHA" = "true" ]; then
+      EXTRA_FLAGS=""   # Test 1: standard attention kernels, no FP8 FMHA
+    else
+      EXTRA_FLAGS="--use_fp8_context_fmha=enable"
+    fi
     ;;
   nvfp4)
     GEMM_PLUGIN="nvfp4"
@@ -252,7 +322,7 @@ esac
 
 # shellcheck disable=SC2086
 trtllm-build \
-  --checkpoint_dir "$ENGINE_DIR/checkpoint" \
+  --checkpoint_dir "$CHECKPOINT_DIR" \
   --output_dir     "$ENGINE_DIR/llm" \
   --gemm_plugin="$GEMM_PLUGIN" \
   --gpt_attention_plugin="$PLUGIN_DTYPE" \
@@ -285,21 +355,30 @@ echo " model_type=$MULTIMODAL_TYPE"
 echo " WARNING: Requires ~20GB RAM. Takes 8-15 min."
 echo "================================================="
 
-TARGET_DTYPE="torch.$VISION_DTYPE_PATCH"
-if ! grep -qP "from_pretrained.*torch_dtype=${TARGET_DTYPE}|torch_dtype=${TARGET_DTYPE}.*from_pretrained" "$MULTIMODAL_BUILDER"; then
-  echo "Patching multimodal_builder.py → torch_dtype=${TARGET_DTYPE} ..."
-  cp "$MULTIMODAL_BUILDER" "${MULTIMODAL_BUILDER}.bak"
-  sed -i "/from_pretrained/s/torch_dtype=torch\.\(float32\|float16\|bfloat16\),/torch_dtype=${TARGET_DTYPE},/" "$MULTIMODAL_BUILDER"
-  echo "✓ Patch applied (backup: ${MULTIMODAL_BUILDER}.bak)"
+if [ "$SKIP_STAGE3" = "true" ]; then
+  # Vision encoder is always BF16 regardless of LLM quantization.
+  # Symlink from the original FP8 build to skip the 8-15 min rebuild.
+  ORIG_VISION_DIR="$ORIG_FP8_DIR/vision"
+  rmdir "$ENGINE_DIR/vision"
+  ln -s "$ORIG_VISION_DIR" "$ENGINE_DIR/vision"
+  echo "  [SKIP] symlinked vision engine from $ORIG_VISION_DIR"
 else
-  echo "torch_dtype=${TARGET_DTYPE} already applied, skipping."
-fi
+  TARGET_DTYPE="torch.$VISION_DTYPE_PATCH"
+  if ! grep -qP "from_pretrained.*torch_dtype=${TARGET_DTYPE}|torch_dtype=${TARGET_DTYPE}.*from_pretrained" "$MULTIMODAL_BUILDER"; then
+    echo "Patching multimodal_builder.py → torch_dtype=${TARGET_DTYPE} ..."
+    cp "$MULTIMODAL_BUILDER" "${MULTIMODAL_BUILDER}.bak"
+    sed -i "/from_pretrained/s/torch_dtype=torch\.\(float32\|float16\|bfloat16\),/torch_dtype=${TARGET_DTYPE},/" "$MULTIMODAL_BUILDER"
+    echo "✓ Patch applied (backup: ${MULTIMODAL_BUILDER}.bak)"
+  else
+    echo "torch_dtype=${TARGET_DTYPE} already applied, skipping."
+  fi
 
-python3 "$TRTLLM_ROOT/examples/models/core/multimodal/build_multimodal_engine.py" \
-  --model_type  "$MULTIMODAL_TYPE" \
-  --model_path  "$MODEL_PATH" \
-  --output_dir  "$ENGINE_DIR/vision" \
-  --max_batch_size 1
+  python3 "$TRTLLM_ROOT/examples/models/core/multimodal/build_multimodal_engine.py" \
+    --model_type  "$MULTIMODAL_TYPE" \
+    --model_path  "$MODEL_PATH" \
+    --output_dir  "$ENGINE_DIR/vision" \
+    --max_batch_size 1
+fi
 
 echo "✓ Stage 3 done: $ENGINE_DIR/vision/"
 
@@ -331,7 +410,7 @@ python3 "$TRTLLM_ROOT/examples/models/core/multimodal/run.py" \
 # ── Summary ───────────────────────────────────────────────────────
 echo ""
 echo "================================================="
-echo " Build complete [$MODEL / $QUANT]. Engine sizes:"
+echo " Build complete [$MODEL / $QUANT${NO_FP8_FMHA:+ (no_fmha)}]. Engine sizes:"
 echo "================================================="
 du -sh "$ENGINE_DIR/llm/rank0.engine"
 du -sh "$ENGINE_DIR/vision/model.engine"
