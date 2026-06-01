@@ -15,8 +15,12 @@
 #   bash run_accuracy_all.sh --quick
 #
 #   # Custom engine path
-#   bash run_accuracy_all.sh --engine-dir /workspace/trt_engines/qwen2vl_int8 \
+#   bash run_accuracy_all.sh --engine-dir /workspace/trt_engines/qwen2vl_2b_int8 \
 #                             --precision int8
+#   bash run_accuracy_all.sh --engine-dir /workspace/trt_engines/qwen2vl_2b_smoothquant \
+#                             --precision smoothquant
+#   bash run_accuracy_all.sh --engine-dir /workspace/trt_engines/qwen2vl_2b_nvfp4 \
+#                             --precision nvfp4
 #
 # Flags:
 #   --skip-baseline        Skip HF baseline run (use if already done)

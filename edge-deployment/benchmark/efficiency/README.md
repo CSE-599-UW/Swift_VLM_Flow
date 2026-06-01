@@ -15,6 +15,9 @@ bash run_efficiency_all.sh
 
 # Custom sample count / warmup / token budget
 bash run_efficiency_all.sh --num_samples 28 --warmup 3 --max_new_tokens 256
+
+# Skip the PyTorch baseline, only run TRT benchmarks
+bash run_efficiency_all.sh --no_baseline
 ```
 
 Results are written to 
@@ -44,6 +47,14 @@ python3 run_benchmark_trt.py \
     --engine_dir /workspace/trt_engines/qwen2vl_2b_fp8 \
     --precision fp8 \
     --output_tag fp8_v1
+python3 run_benchmark_trt.py \
+    --engine_dir /workspace/trt_engines/qwen2vl_2b_smoothquant \
+    --precision smoothquant \
+    --output_tag smoothquant_v1
+python3 run_benchmark_trt.py \
+    --engine_dir /workspace/trt_engines/qwen2vl_2b_nvfp4 \
+    --precision nvfp4 \
+    --output_tag nvfp4_v1
 ```
 
 Requires a pre-built TRT engine at the given `--engine_dir`.
@@ -59,20 +70,23 @@ Saves to: `results/efficiency/trt/<precision>_<run_id>[_<tag>].json`
 | `--num_samples N` | 50 | LLaVA-Bench samples to evaluate |
 | `--warmup W` | 3 | Warmup inference runs (discarded) |
 | `--max_new_tokens T` | 256 | Max tokens generated per sample |
+| `--no_baseline` | — | Skip the PyTorch baseline, run TRT benchmarks only |
 
-The script runs the PyTorch baseline first, then iterates over all TRT precision
-variants in order: **bf16 → fp8 → int8 → int4 → int4_awq**.
+The script runs the PyTorch baseline first (unless `--no_baseline`), then iterates over all TRT precision
+variants in order: **bf16 → int8 → int4 → smoothquant → fp8 → int4_awq → nvfp4**.
 Each TRT run is skipped automatically if its engine directory does not exist.
 
 Engine directories expected under `/workspace/trt_engines/`:
 
-| Precision | Engine Dir |
-|---|---|
-| `bf16` | `qwen2vl_2b_bf16` |
-| `fp8` | `qwen2vl_2b_fp8` |
-| `int8` | `qwen2vl_2b_int8` |
-| `int4` | `qwen2vl_2b_int4` |
-| `int4_awq` | `qwen2vl_2b_int4_awq` |
+| Precision | Engine Dir | Notes |
+|---|---|---|
+| `bf16` | `qwen2vl_2b_bf16` | Baseline |
+| `int8` | `qwen2vl_2b_int8` | W8A16 weight-only |
+| `int4` | `qwen2vl_2b_int4` | W4A16 weight-only |
+| `smoothquant` | `qwen2vl_2b_smoothquant` | W8A8 INT8 |
+| `fp8` | `qwen2vl_2b_fp8` | W8A8 FP8, Ada/Hopper/Blackwell |
+| `int4_awq` | `qwen2vl_2b_int4_awq` | W4A16 AWQ |
+| `nvfp4` | `qwen2vl_2b_nvfp4` | W4A8 FP4, Blackwell only |
 
 ---
 

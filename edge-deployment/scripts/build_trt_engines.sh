@@ -14,8 +14,6 @@
 # Supported --model values:
 #   qwen2vl_2b   → Qwen2-VL-2B-Instruct    (✅ 穩定)
 #   qwen2vl_7b   → Qwen2-VL-7B-Instruct    (✅ 穩定)
-#   qwen25vl_7b  → Qwen2.5-VL-7B-Instruct  (⚠️  需要 TRT-LLM v1.3+)
-#   qwen3vl_2b   → Qwen3-VL-2B-Instruct    (⚠️  需要 TRT-LLM v1.3+ nightly，有已知 bug)
 #
 # Supported --quant values:
 #   ── Pipeline A: convert_checkpoint.py（不需要 calibration）──
@@ -27,6 +25,7 @@
 #   ── Pipeline B: quantize.py via ModelOpt（需要 calibration）──
 #   fp8         → W8A8 FP8，需要 Ada/Hopper/Blackwell GPU (RTX 5060 Ti ✅)
 #   int4_awq    → W4A16 AWQ，精度最佳的 4-bit 選項
+#   nvfp4       → W4A8 FP4 weights + FP8 activations，Blackwell 專屬（RTX 5060 Ti ✅）
 
 set -euo pipefail
 
@@ -62,22 +61,14 @@ case "$MODEL" in
   qwen2vl_2b)
     HF_MODEL_NAME="Qwen2-VL-2B-Instruct"
     MULTIMODAL_TYPE="qwen2_vl"
-    TRT_SUPPORT="stable"
+    PLUGIN_DTYPE="bfloat16"
+    VISION_DTYPE_PATCH="bfloat16"
     ;;
   qwen2vl_7b)
     HF_MODEL_NAME="Qwen2-VL-7B-Instruct"
     MULTIMODAL_TYPE="qwen2_vl"
-    TRT_SUPPORT="stable"
-    ;;
-  qwen25vl_7b)
-    HF_MODEL_NAME="Qwen2.5-VL-7B-Instruct"
-    MULTIMODAL_TYPE="qwen2_5_vl"
-    TRT_SUPPORT="requires_v13"
-    ;;
-  qwen3vl_2b)
-    HF_MODEL_NAME="Qwen3-VL-2B-Instruct"
-    MULTIMODAL_TYPE="qwen3_vl"
-    TRT_SUPPORT="experimental"
+    PLUGIN_DTYPE="bfloat16"
+    VISION_DTYPE_PATCH="bfloat16"
     ;;
   *)
     echo "ERROR: Unsupported --model value: '$MODEL'"
@@ -88,11 +79,11 @@ esac
 
 # ── Quant mode validation ─────────────────────────────────────────
 case "$QUANT" in
-  bf16|int8|int4|smoothquant|fp8|int4_awq) ;;
+  bf16|int8|int4|smoothquant|fp8|int4_awq|nvfp4) ;;
   *)
     echo "ERROR: Unsupported --quant value: '$QUANT'"
     echo "  Pipeline A (no calibration): bf16 | int8 | int4 | smoothquant"
-    echo "  Pipeline B (needs calibration): fp8 | int4_awq"
+    echo "  Pipeline B (needs calibration): fp8 | int4_awq | nvfp4"
     exit 1
     ;;
 esac
@@ -104,25 +95,8 @@ case "$QUANT" in
   bf16|int8|int4|smoothquant)
     PIPELINE="A"
     ;;
-  fp8|int4_awq)
+  fp8|int4_awq|nvfp4)
     PIPELINE="B"
-    ;;
-esac
-
-# ── Support warnings ──────────────────────────────────────────────
-case "$TRT_SUPPORT" in
-  requires_v13)
-    echo ""
-    echo "⚠️  WARNING: $HF_MODEL_NAME 需要 TRT-LLM v1.3+。"
-    echo "   確認版本：python3 -c \"import tensorrt_llm; print(tensorrt_llm.__version__)\""
-    echo "   繼續執行中... (Ctrl+C 可取消)"
-    sleep 5
-    ;;
-  experimental)
-    echo ""
-    echo "⚠️  WARNING: $HF_MODEL_NAME 為實驗性支援，有已知 bug。"
-    echo "   繼續執行中... (Ctrl+C 可取消)"
-    sleep 5
     ;;
 esac
 
@@ -136,7 +110,7 @@ QUANTIZE_SCRIPT="$TRTLLM_ROOT/examples/quantization/quantize.py"
 echo ""
 echo "================================================="
 echo " Model             : $HF_MODEL_NAME"
-echo " Quantization      : $QUANT  (Pipeline $PIPELINE)"
+echo " Quantization      : $QUANT"
 echo " Engine output dir : $ENGINE_DIR"
 echo "================================================="
 
@@ -148,7 +122,7 @@ fi
 
 if [ "$PIPELINE" = "B" ] && [ ! -f "$QUANTIZE_SCRIPT" ]; then
   echo "ERROR: quantize.py not found at $QUANTIZE_SCRIPT"
-  echo "  This script is required for fp8 and int4_awq quantization."
+  echo "  This script is required for fp8, int4_awq and nvfp4 quantization."
   exit 1
 fi
 
@@ -168,8 +142,6 @@ case "$QUANT" in
   # ── Pipeline A ────────────────────────────────────────────────
   bf16)
     # Weight: BF16 / Activation: BF16
-    PLUGIN_DTYPE="bfloat16"
-    VISION_DTYPE_PATCH="bfloat16"
     python3 "$TRTLLM_ROOT/examples/models/core/qwen/convert_checkpoint.py" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
@@ -178,38 +150,33 @@ case "$QUANT" in
 
   int8)
     # Weight: INT8 / Activation: FP16
-    PLUGIN_DTYPE="float16"
-    VISION_DTYPE_PATCH="float16"
     python3 "$TRTLLM_ROOT/examples/models/core/qwen/convert_checkpoint.py" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
-      --dtype float16 \
+      --dtype bfloat16 \
       --use_weight_only \
       --weight_only_precision int8
     ;;
 
   int4)
     # Weight: INT4 / Activation: FP16
-    PLUGIN_DTYPE="float16"
-    VISION_DTYPE_PATCH="float16"
     python3 "$TRTLLM_ROOT/examples/models/core/qwen/convert_checkpoint.py" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
-      --dtype float16 \
+      --dtype bfloat16 \
       --use_weight_only \
       --weight_only_precision int4
     ;;
 
+  # ============================================================================
   smoothquant)
     # Weight: INT8 / Activation: INT8 (W8A8)
     # --smoothquant 0.5: 遷移強度，越大越多量化負擔移到 weight 側（範圍 0~1）
     # --per_token --per_channel: 精度最佳的 SmoothQuant 組合
-    PLUGIN_DTYPE="float16"
-    VISION_DTYPE_PATCH="float16"
     python3 "$TRTLLM_ROOT/examples/models/core/qwen/convert_checkpoint.py" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
-      --dtype float16 \
+      --dtype bfloat16 \
       --smoothquant 0.5 \
       --per_token \
       --per_channel
@@ -220,12 +187,10 @@ case "$QUANT" in
     # Weight: FP8 / Activation: FP8 (W8A8)
     # 需要 Ada Lovelace (RTX 4000) 或更新 GPU → RTX 5060 Ti ✅
     # --calib_size 512: calibration 用的樣本數，越大越準但越慢
-    PLUGIN_DTYPE="float16"
-    VISION_DTYPE_PATCH="float16"
     python3 "$QUANTIZE_SCRIPT" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
-      --dtype float16 \
+      --dtype bfloat16 \
       --qformat fp8 \
       --kv_cache_dtype fp8 \
       --calib_size 512
@@ -236,16 +201,24 @@ case "$QUANT" in
     # AWQ: calibration 時保留 salient weights，精度比純 int4 好
     # --awq_block_size 128: per-group 的 group size，128 是 Qwen 推薦值
     # --calib_size 32: AWQ 需要的 calibration 樣本數較少
-    PLUGIN_DTYPE="float16"
-    VISION_DTYPE_PATCH="float16"
     python3 "$QUANTIZE_SCRIPT" \
       --model_dir  "$MODEL_PATH" \
       --output_dir "$ENGINE_DIR/checkpoint" \
-      --dtype float16 \
+      --dtype bfloat16 \
       --qformat int4_awq \
       --awq_block_size 128 \
       --calib_size 32
     ;;
+
+  nvfp4)
+    python3 "$QUANTIZE_SCRIPT" \
+      --model_dir  "$MODEL_PATH" \
+      --output_dir "$ENGINE_DIR/checkpoint" \
+      --dtype bfloat16 \
+      --qformat nvfp4 \
+      --calib_size 512
+    ;;
+  
 
 esac
 
@@ -260,24 +233,35 @@ echo " Stage 2/3: Building LLM decoder engine"
 echo " plugin_dtype=$PLUGIN_DTYPE"
 echo "================================================="
 
-# fp8 需要額外的 context fmha flag
-FP8_FLAG=""
-if [ "$QUANT" = "fp8" ]; then
-  FP8_FLAG="--use_fp8_context_fmha=enable"
-fi
+# fp8 / nvfp4 需要不同的 gemm_plugin 和額外旗標
+GEMM_PLUGIN="$PLUGIN_DTYPE"
+EXTRA_FLAGS=""
+case "$QUANT" in
+  fp8)
+    GEMM_PLUGIN="fp8"
+    EXTRA_FLAGS="--use_fp8_context_fmha=enable"
+    ;;
+  nvfp4)
+    GEMM_PLUGIN="nvfp4"
+    # fuse_fp4_quant requires a matching FMHA kernel (dataTypeOut=e2m1) which
+    # does not exist for Qwen2-VL's GQA config (12Q/2KV heads) on sm_120.
+    # Omitting it: nvfp4 still applies to linear layers via gemm_plugin=nvfp4.
+    EXTRA_FLAGS=""
+    ;;
+esac
 
 # shellcheck disable=SC2086
 trtllm-build \
   --checkpoint_dir "$ENGINE_DIR/checkpoint" \
   --output_dir     "$ENGINE_DIR/llm" \
-  --gemm_plugin="$PLUGIN_DTYPE" \
+  --gemm_plugin="$GEMM_PLUGIN" \
   --gpt_attention_plugin="$PLUGIN_DTYPE" \
   --max_batch_size=1 \
   --max_input_len=2048 \
   --max_seq_len=2560 \
   --max_multimodal_len=1536 \
   --max_num_tokens=2560 \
-  $FP8_FLAG
+  $EXTRA_FLAGS
 
 echo "✓ Stage 2 done: $ENGINE_DIR/llm/"
 
