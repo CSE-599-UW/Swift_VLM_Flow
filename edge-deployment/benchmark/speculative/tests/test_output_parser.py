@@ -38,3 +38,17 @@ def test_parse_vanilla_profile():
     assert res["verify_steps"] == 0
     assert res["decode_tokens_per_sec"] > 0
     assert res["output_tokens"] > 0
+
+
+def test_parse_base_only_via_disable_spec():
+    # SD-off baseline run on the EAGLE engine with disable_spec_decode: there is no
+    # top-level "generation" section; decode timing lives in the llm_generation stage.
+    res = output_parser.parse_profile(
+        os.path.join(FIX, "sample_profile_base_disable_spec.json"), spec_decode=False)
+    assert res["acceptance_length"] == 0.0
+    assert res["verify_steps"] == 0
+    assert res["output_tokens"] == 164                 # 1 base forward per token
+    assert abs(res["decode_latency_ms_per_tok"] - 36.617) < 0.1   # = mean_ms of llm_generation
+    assert abs(res["decode_tokens_per_sec"] - 1000.0 / 36.617) < 0.1
+    assert abs(res["peak_vram_gb"] - 7.485) < 0.05     # ~7.5 GB (fp8)
+    assert res["prefill_ms_mean"] > 0

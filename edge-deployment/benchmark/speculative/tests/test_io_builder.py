@@ -45,3 +45,16 @@ def test_write_input_json(tmp_path):
     import json
     loaded = json.load(open(p))
     assert loaded["requests"][0]["messages"][0]["content"][1]["text"] == "Hi"
+
+
+def test_build_input_json_disable_spec_decode():
+    samples = [
+        {"question_id": 1, "prompt": "What is this?", "image_path": "/a.jpg"},
+        {"question_id": 2, "prompt": "And this?", "image_path": "/b.jpg"},
+    ]
+    # off by default
+    off = io_builder.build_input_json(samples, max_new_tokens=64)
+    assert all("disable_spec_decode" not in r for r in off["requests"])
+    # on -> every request carries the flag (same-engine SD-off baseline)
+    on = io_builder.build_input_json(samples, max_new_tokens=64, disable_spec_decode=True)
+    assert all(r["disable_spec_decode"] is True for r in on["requests"])

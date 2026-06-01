@@ -15,9 +15,13 @@ PRECISION   = os.environ.get("SD_PRECISION", "bf16")   # bf16 on GB10; "fp8" onc
 # ── TensorRT-Edge-LLM paths (overridable via env.sh) ─────────────────────────
 EDGE_LLM_PATH = os.path.expanduser(os.environ.get("EDGE_LLM_PATH", "~/TensorRT-Edge-LLM"))
 WORKSPACE_DIR = os.path.expanduser(os.environ.get("WORKSPACE_DIR", "~/tensorrt-edgellm-workspace"))
-ENGINE_LLM_DIR         = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "llm")          # EAGLE base+draft (SD-on)
-ENGINE_LLM_VANILLA_DIR = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "llm_vanilla")  # plain base (SD-off baseline)
-ENGINE_VISUAL_DIR      = os.path.join(WORKSPACE_DIR, MODEL_NAME, "engines", "visual")
+# Engine dir is precision-aware: bf16 → engines/ (built on the GB10), fp8 → engines_fp8/
+# (built on the GB10 from the B200-exported fp8 ONNX in onnx_fp8/). Keeps both sets side by side.
+_ENGINES_SUBDIR = "engines" if PRECISION == "bf16" else f"engines_{PRECISION}"
+_ENGINES_ROOT   = os.path.join(WORKSPACE_DIR, MODEL_NAME, _ENGINES_SUBDIR)
+ENGINE_LLM_DIR         = os.path.join(_ENGINES_ROOT, "llm")          # EAGLE base+draft (SD-on)
+ENGINE_LLM_VANILLA_DIR = os.path.join(_ENGINES_ROOT, "llm_vanilla")  # plain base (SD-off baseline)
+ENGINE_VISUAL_DIR      = os.path.join(_ENGINES_ROOT, "visual")
 LLM_INFERENCE_BIN      = os.path.join(EDGE_LLM_PATH, "build", "examples", "llm", "llm_inference")
 
 # ── EAGLE3 / spec-decode params (llm_inference flags) ────────────────────────

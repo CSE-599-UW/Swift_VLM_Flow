@@ -24,13 +24,22 @@ def build_request(prompt: str, image_path: str | None = None) -> dict:
 
 def build_input_json(samples: list[dict], max_new_tokens: int,
                      temperature: float = 0.0, top_k: int = 1,
-                     top_p: float = 1.0, batch_size: int = 1) -> dict:
+                     top_p: float = 1.0, batch_size: int = 1,
+                     disable_spec_decode: bool = False) -> dict:
     """Assemble a full input.json payload from benchmark samples.
 
     Each sample: {"prompt": str, "image_path": str|None, "question_id": ...}.
     Defaults are greedy (temperature 0.0, top_k 1) so SD-on vs SD-off output is
     directly comparable for the losslessness check.
+
+    With disable_spec_decode=True, every request carries `disable_spec_decode`, so
+    an EAGLE engine (draft loaded) decodes the base model autoregressively — a
+    same-engine SD-off baseline (used when no separate vanilla engine exists, e.g. fp8).
     """
+    requests = [build_request(s["prompt"], s.get("image_path")) for s in samples]
+    if disable_spec_decode:
+        for r in requests:
+            r["disable_spec_decode"] = True
     return {
         "batch_size": batch_size,
         "temperature": temperature,
@@ -38,7 +47,7 @@ def build_input_json(samples: list[dict], max_new_tokens: int,
         "top_k": top_k,
         "max_generate_length": max_new_tokens,
         "apply_chat_template": True,
-        "requests": [build_request(s["prompt"], s.get("image_path")) for s in samples],
+        "requests": requests,
     }
 
 

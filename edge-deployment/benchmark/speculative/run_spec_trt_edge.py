@@ -36,6 +36,10 @@ def parse_args():
     ap.add_argument("--max_new_tokens", type=int, default=config_spec.MAX_NEW_TOKENS)
     ap.add_argument("--spec_decode", action=argparse.BooleanOptionalAction, default=True,
                     help="--spec_decode (EAGLE) or --no-spec_decode (vanilla baseline)")
+    ap.add_argument("--baseline_via_eagle", action="store_true",
+                    help="for the SD-off baseline, decode on the EAGLE engine with per-request "
+                         "disable_spec_decode (same-engine baseline) instead of a separate vanilla "
+                         "engine — use when no vanilla engine exists (e.g. fp8)")
     ap.add_argument("--output_tag", type=str, default=None)
     return ap.parse_args()
 
@@ -54,8 +58,12 @@ def save_images(samples: list[dict], dst_dir: str) -> list[dict]:
 
 
 def run_inference(input_path: str, output_path: str, profile_path: str,
-                  spec_decode: bool, warmup: int, max_new_tokens: int) -> None:
-    engine_dir = config_spec.ENGINE_LLM_DIR if spec_decode else config_spec.ENGINE_LLM_VANILLA_DIR
+                  spec_decode: bool, warmup: int, max_new_tokens: int,
+                  baseline_via_eagle: bool = False) -> None:
+    # The EAGLE engine is used for SD-on and for the same-engine SD-off baseline
+    # (baseline_via_eagle, where per-request disable_spec_decode turns speculation off).
+    use_eagle_engine = spec_decode or baseline_via_eagle
+    engine_dir = config_spec.ENGINE_LLM_DIR if use_eagle_engine else config_spec.ENGINE_LLM_VANILLA_DIR
     cmd = [
         config_spec.LLM_INFERENCE_BIN,
         "--engineDir", engine_dir,
@@ -67,7 +75,10 @@ def run_inference(input_path: str, output_path: str, profile_path: str,
         "--warmup", str(warmup),
         "--maxGenerateLength", str(max_new_tokens),
     ]
-    if spec_decode:
+    # --specDecode initializes the spec runtime / loads the draft. For the
+    # baseline_via_eagle case it's still passed; per-request disable_spec_decode
+    # (set in the input.json) then forces autoregressive base-only decoding.
+    if use_eagle_engine:
         cmd += ["--specDecode",
                 "--specDraftTopK", str(config_spec.SPEC_DRAFT_TOPK),
                 "--specDraftStep", str(config_spec.SPEC_DRAFT_STEP),
@@ -97,14 +108,18 @@ def main():
     input_path = os.path.join(work, "input.json")
     output_path = os.path.join(work, "output.json")
     profile_path = os.path.join(work, "profile.json")
+    base_via_eagle = (not args.spec_decode) and args.baseline_via_eagle
     io_builder.write_input_json(
         io_builder.build_input_json(hsamples, max_new_tokens=args.max_new_tokens,
-                                    temperature=0.0, top_k=1, top_p=1.0),
+                                    temperature=0.0, top_k=1, top_p=1.0,
+                                    disable_spec_decode=base_via_eagle),
         input_path)
 
-    print(f"[2/4] Running llm_inference (spec_decode={args.spec_decode})...")
+    print(f"[2/4] Running llm_inference (spec_decode={args.spec_decode}"
+          f"{', baseline_via_eagle' if base_via_eagle else ''})...")
     run_inference(input_path, output_path, profile_path,
-                  args.spec_decode, args.warmup, args.max_new_tokens)
+                  args.spec_decode, args.warmup, args.max_new_tokens,
+                  baseline_via_eagle=args.baseline_via_eagle)
 
     print("[3/4] Parsing profile + outputs...")
     prof = output_parser.parse_profile(profile_path, spec_decode=args.spec_decode)
@@ -136,8 +151,11 @@ def main():
             "precision": config_spec.PRECISION,
             "backend": "trt-edge-llm",
             "spec_decode": args.spec_decode,
-            "engine_dir": (config_spec.ENGINE_LLM_DIR if args.spec_decode
+            "engine_dir": (config_spec.ENGINE_LLM_DIR if (args.spec_decode or base_via_eagle)
                            else config_spec.ENGINE_LLM_VANILLA_DIR),
+            "baseline_method": (None if args.spec_decode else
+                                ("disable_spec_decode_on_eagle" if base_via_eagle
+                                 else "vanilla_engine")),
             "num_samples": args.num_samples,
             "num_warmup": args.warmup,
             "max_new_tokens": args.max_new_tokens,

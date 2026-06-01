@@ -1,0 +1,47 @@
+{
+  "multimodal": {
+    "average_time_per_token_ms": 0.1096,
+    "total_image_tokens": 960,
+    "total_images": 2,
+    "total_multimodal_tokens": 960,
+    "total_runs": 2
+  },
+  "peak_unified_memory_bytes": 8036786176,
+  "peak_unified_memory_mb": 7664.4765625,
+  "prefill": {
+    "average_time_per_run_ms": 71.15469360351562,
+    "average_time_per_token_ms": 0.13951900601387024,
+    "average_tokens_per_run": 510.0,
+    "computed_tokens": 1020,
+    "tokens_per_second": 7167.482421875,
+    "total_runs": 2
+  },
+  "stages": [
+    {
+      "stage_id": "llm_generation",
+      "average_time_per_run_ms": 36.61658477783203,
+      "total_gpu_time_ms": 6005.11962890625,
+      "total_runs": 164,
+      "gpu_time_stats": {
+        "count": 164,
+        "max_ms": 37.81158447265625,
+        "mean_ms": 36.616587173648,
+        "median_ms": 36.530879974365234,
+        "min_ms": 36.3372802734375,
+        "p95_ms": 37.19776153564453,
+        "p99_ms": 37.70793533325195,
+        "stddev_ms": 0.25824561149415876
+      }
+    },
+    {
+      "stage_id": "vision_encoder",
+      "total_runs": 2,
+      "gpu_time_stats": {"count": 2, "mean_ms": 52.60441589355469, "p95_ms": 52.627777099609375}
+    },
+    {
+      "stage_id": "llm_prefill",
+      "total_runs": 2,
+      "gpu_time_stats": {"count": 2, "mean_ms": 71.15468978881836, "p95_ms": 72.39820861816406}
+    }
+  ]
+}

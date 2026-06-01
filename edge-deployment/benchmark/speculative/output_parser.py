@@ -55,16 +55,30 @@ def parse_profile(profile_path: str, spec_decode: bool) -> dict:
         out["accepted_tokens"] = out["output_tokens"]  # accepted == generated in EAGLE
         tps = eg.get("overall_tokens_per_second_excluding_base_prefill", 0.0)
     else:
-        # vanilla generation section (key "generation" with "generated_tokens",
-        # confirmed against a real SD-off profile from llm_vanilla)
-        gen = p.get("generation", p.get("decode", {}))
-        out["output_tokens"] = int(gen.get("generated_tokens",
-                                            gen.get("total_generated_tokens", 0)))
         out["verify_steps"] = 0
         out["accepted_tokens"] = 0
         out["acceptance_length"] = 0.0
-        tps = gen.get("tokens_per_second",
-                      gen.get("overall_tokens_per_second_excluding_base_prefill", 0.0))
+        # (a) vanilla generation section (separate vanilla engine): key "generation"
+        #     with "generated_tokens" — confirmed against a real llm_vanilla profile.
+        gen = p.get("generation", p.get("decode", {}))
+        if gen:
+            out["output_tokens"] = int(gen.get("generated_tokens",
+                                                gen.get("total_generated_tokens", 0)))
+            tps = gen.get("tokens_per_second",
+                          gen.get("overall_tokens_per_second_excluding_base_prefill", 0.0))
+        else:
+            # (b) base-only via disable_spec_decode on an EAGLE engine: no top-level
+            #     generation section. Decode runs one base forward per token, timed in
+            #     the llm_generation stage → tok/s = 1000 / mean_ms_per_run.
+            st = _stage(p, "llm_generation")
+            if st:
+                mean_ms = st["gpu_time_stats"]["mean_ms"]
+                out["output_tokens"] = int(st.get("total_runs",
+                                                   st["gpu_time_stats"].get("count", 0)))
+                tps = 1000.0 / mean_ms if mean_ms > 0 else 0.0
+            else:
+                out["output_tokens"] = 0
+                tps = 0.0
 
     out["decode_tokens_per_sec"] = round(tps, 3)
     out["decode_latency_ms_per_tok"] = round(1000.0 / tps, 3) if tps > 0 else 0.0
