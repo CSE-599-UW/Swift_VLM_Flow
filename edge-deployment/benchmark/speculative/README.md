@@ -38,42 +38,42 @@ mean text similarity 0.774. Divergences come from this bf16 SD-on/SD-off pair us
 so a single greedy token flip cascades — not from EAGLE being lossy. (The fp8 run avoids this by
 running its SD-off baseline on the **same** engine via `disable_spec_decode` — see note 5.)
 
-**fp8 (8×B200-exported ONNX, built + benchmarked on the GB10):**
+**fp8 (8×B200-exported ONNX, built + benchmarked on the GB10; all numbers below from one
+session with the GPU verified vacant — vision-encoder time ~45 ms in every run):**
 
 | Metric | bf16 SD-on | fp8 SD-on | Δ |
 |---|---|---|---|
-| Decode throughput (tok/s) | 27.4 | 47.3 | **+72%** |
+| Decode throughput (tok/s) | 27.7 | 46.9 | **+69%** |
 | Acceptance length (tok/step) | 2.53 | 2.56 | preserved |
-| Peak VRAM (GB) | 13.66 | 7.55 | **−45%** |
+| Peak VRAM (GB) | 13.69 | 7.54 | **−45%** |
 
 | Precision | SD-off (tok/s) | SD-on (tok/s) | Decode speedup |
 |---|---|---|---|
-| bf16 | 14.7 | 27.4 | **1.86×** |
-| fp8 | 27.0 | 47.3 | **1.75×** |
+| bf16 | 14.7 | 27.7 | **1.89×** |
+| fp8 | 27.3 | 46.9 | **1.72×** |
 
-Both SD-off baselines here use the same-engine `disable_spec_decode` method (apples-to-apples).
-The bf16 same-engine baseline (14.7 tok/s) is within ~3% of the original two-engine vanilla
-baseline (14.3 tok/s → 1.91×, top table), confirming the method change is negligible. fp8 nearly
-halves VRAM and lifts SD-on throughput +72%, acceptance preserved. Its SD *speedup* is a touch
-lower than bf16's (1.75× vs 1.86×) because fp8 accelerates the memory-bound single-token base
-decode more than the compute-bound tree verification, shrinking SD's relative edge — notably
-**fp8 base-only (27.0) ≈ bf16+EAGLE (27.4)**. Report: `results/reports/report_fp8_vs_bf16_*/`
+Both SD-off baselines use the same-engine `disable_spec_decode` method (apples-to-apples). fp8
+nearly halves VRAM and lifts SD-on throughput +69%, acceptance preserved. Its SD *speedup* is a
+touch lower than bf16's (1.72× vs 1.89×) because fp8 accelerates the memory-bound single-token
+base decode more than the compute-bound tree verification, shrinking SD's relative edge — notably
+**fp8 base-only (27.3) ≈ bf16+EAGLE (27.7)**. Report: `results/reports/report_fp8_vs_bf16_*/`
 (via `report_fp8_vs_bf16.py`).
 
-**Mixed precision (base × draft, SD-on) — matched precision is required:**
+**Mixed precision (base × draft, SD-on) — base precision dominates; mixing is safe:**
 
 | base \ draft | bf16 | fp8 |
 |---|---|---|
-| **bf16** | 27.4 | 15.4 |
-| **fp8** | 23.0 | **47.3** |
+| **bf16** | 27.7 | 28.6 |
+| **fp8** | 42.8 | **46.9** |
 
-Both off-diagonal mixes drop *below pure bf16* — and fp8-base + bf16-draft (23.0) is even slower
-than decoding the fp8 base autoregressively (27.0, net-negative SD) — while acceptance stays ~2.5
-throughout. EAGLE feeds the base's hidden states (dim 10752) to the draft every step (1 verify +
-~6 draft forwards/token); a precision mismatch forces a dtype conversion on each hop that swamps
-any per-engine gain. Peak VRAM tracks the **base** precision. So **fp8 must be applied to both
-base and draft** — no partial-fp8 shortcut. (Reproduce by pointing the runner at a mixed engine
-dir via `SD_ENGINE_LLM_DIR`; `report_fp8_vs_bf16.py` renders the 2×2 when the mixed runs exist.)
+Throughput is governed by the **base** precision (it runs the expensive tree-verification forward
+each step): an fp8 base (43–47 tok/s) is ~70% faster than a bf16 base (28–29 tok/s) regardless of
+draft. The **draft precision is second-order** — with an fp8 base a bf16 draft costs ~9% (42.8 vs
+46.9); with a bf16 base it's within noise. Acceptance stays ~2.5 throughout and peak VRAM tracks
+the base precision. So fp8 on the base captures most of the win — quantizing the draft adds only a
+few percent, and mixing precisions is fine (e.g. an fp8 base with a bf16 draft still gets 42.8).
+(Reproduce by pointing the runner at a mixed engine dir via `SD_ENGINE_LLM_DIR`;
+`report_fp8_vs_bf16.py` renders the 2×2 when the mixed runs exist.)
 
 ## Pipeline
 

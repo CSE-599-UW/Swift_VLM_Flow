@@ -167,8 +167,9 @@ def _mixed_ablation_lines(runs: dict) -> list:
         "## Mixed-precision ablation (base × draft, SD-on)",
         "",
         "Same eagle engine dir with the base and draft engines swapped across precisions "
-        "(symlinked, no rebuild). Acceptance stays ~2.5 in every combo, so the draft predicts "
-        "equally well regardless — differences are pure runtime overhead.",
+        "(symlinked, no rebuild). All four combos run fine (acceptance ~2.5 throughout); the "
+        "throughput differences isolate where the fp8 win comes from. (All six runs measured "
+        "back-to-back with the GPU verified vacant — vision-encoder time ~45 ms in every run.)",
         "",
         "Decode throughput (tok/s):",
         "",
@@ -189,14 +190,21 @@ def _mixed_ablation_lines(runs: dict) -> list:
         ratio = f"{rr['decode_tok_s'] / row(bo)['decode_tok_s']:.2f}×" if bo else "—"
         lines.append(f"| {b} | {d} | {rr['decode_tok_s']:.1f} | {rr['acceptance']:.2f} | "
                      f"{rr['vram_gb']:.2f} | {ratio} |")
+    def t(b, d):
+        r = corner[(b, d)]
+        return row(r)["decode_tok_s"] if r else None
+    bb, bfp, fb, ff = t("bf16", "bf16"), t("bf16", "fp8"), t("fp8", "bf16"), t("fp8", "fp8")
+    base_gain = (ff / bb - 1) * 100 if (bb and ff) else 0
+    draft_cost = (1 - fb / ff) * 100 if (fb and ff) else 0
     lines += [
         "",
-        "**Matched precision is required.** Both mixes fall *below pure bf16*, and fp8-base + "
-        "bf16-draft is even slower than decoding the fp8 base autoregressively (net-negative SD). "
-        "EAGLE feeds the base's hidden states (dim 10752) to the draft every step (1 verify + ~6 "
-        "draft forwards/token); a precision mismatch forces a dtype conversion on each hop that "
-        "swamps any per-engine gain. Peak VRAM tracks the **base** precision. → fp8 must be applied "
-        "to **both** base and draft to get the win.",
+        f"**Throughput is governed by the base precision** — the base runs the expensive "
+        f"tree-verification forward every step. An fp8 base ({fb:.0f}–{ff:.0f} tok/s) is ~{base_gain:.0f}% "
+        f"faster than a bf16 base ({bb:.0f}–{bfp:.0f} tok/s) regardless of draft. The **draft precision "
+        f"is second-order**: with an fp8 base a bf16 draft costs ~{draft_cost:.0f}% ({fb:.1f} vs {ff:.1f} "
+        f"tok/s); with a bf16 base it's within noise ({bb:.1f} vs {bfp:.1f}). Acceptance stays ~2.5 "
+        f"throughout and peak VRAM tracks the **base** precision (fp8 base → ~7.5 GB). So fp8 on the base "
+        f"captures most of the win — quantizing the draft too adds only a few percent, and mixing is safe.",
         "",
     ]
     return lines
