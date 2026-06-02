@@ -135,11 +135,71 @@ def render_markdown(runs: dict) -> str:
             "speedup is expected to match bf16's measured ~1.9×. A *measured* fp8 speedup would require a "
             "separately-exported non-eagle fp8 base ONNX (another B200 export step).",
         ]
+    parts += _mixed_ablation_lines(runs)
     parts.append("")
     parts += ["<sub>sources: " + ", ".join(
         f"{k[0]}/{'SD-on' if k[1] else 'SD-off'}={v['_path']}" for k, v in sorted(runs.items(), key=lambda x: str(x[0]))
     ) + "</sub>", ""]
     return "\n".join(parts)
+
+
+# base × draft precision grid (all SD-on): maps (base, draft) -> results bucket key
+_MIX_CORNERS = {
+    ("bf16", "bf16"): ("bf16", True),
+    ("bf16", "fp8"):  ("mix_b16base_fp8draft", True),
+    ("fp8", "bf16"):  ("mix_fp8base_bf16draft", True),
+    ("fp8", "fp8"):   ("fp8", True),
+}
+
+
+def _mixed_ablation_lines(runs: dict) -> list:
+    """2×2 base×draft ablation — rendered only when both mixed runs are present."""
+    corner = {bd: runs.get(key) for bd, key in _MIX_CORNERS.items()}
+    if not (corner[("bf16", "fp8")] and corner[("fp8", "bf16")]):
+        return []
+    base_only = {"bf16": runs.get(("bf16", False)), "fp8": runs.get(("fp8", False))}
+
+    def cell(b, d):
+        r = corner[(b, d)]
+        return f"{row(r)['decode_tok_s']:.1f}" if r else "—"
+
+    lines = [
+        "## Mixed-precision ablation (base × draft, SD-on)",
+        "",
+        "Same eagle engine dir with the base and draft engines swapped across precisions "
+        "(symlinked, no rebuild). Acceptance stays ~2.5 in every combo, so the draft predicts "
+        "equally well regardless — differences are pure runtime overhead.",
+        "",
+        "Decode throughput (tok/s):",
+        "",
+        "| base \\ draft | bf16 | fp8 |",
+        "|---|---|---|",
+        f"| **bf16** | {cell('bf16','bf16')} | {cell('bf16','fp8')} |",
+        f"| **fp8** | {cell('fp8','bf16')} | {cell('fp8','fp8')} |",
+        "",
+        "| base | draft | tok/s | acceptance | VRAM (GB) | vs same-base autoregressive |",
+        "|---|---|---|---|---|---|",
+    ]
+    for b, d in [("bf16", "bf16"), ("bf16", "fp8"), ("fp8", "bf16"), ("fp8", "fp8")]:
+        r = corner[(b, d)]
+        if not r:
+            continue
+        rr = row(r)
+        bo = base_only.get(b)
+        ratio = f"{rr['decode_tok_s'] / row(bo)['decode_tok_s']:.2f}×" if bo else "—"
+        lines.append(f"| {b} | {d} | {rr['decode_tok_s']:.1f} | {rr['acceptance']:.2f} | "
+                     f"{rr['vram_gb']:.2f} | {ratio} |")
+    lines += [
+        "",
+        "**Matched precision is required.** Both mixes fall *below pure bf16*, and fp8-base + "
+        "bf16-draft is even slower than decoding the fp8 base autoregressively (net-negative SD). "
+        "EAGLE feeds the base's hidden states (dim 10752) to the draft every step (1 verify + ~6 "
+        "draft forwards/token); a precision mismatch forces a dtype conversion on each hop that "
+        "swamps any per-engine gain. Peak VRAM tracks the **base** precision. → fp8 must be applied "
+        "to **both** base and draft to get the win.",
+        "",
+    ]
+    return lines
 
 
 def render_figure(runs: dict, out_dir: str) -> str | None:
@@ -173,6 +233,34 @@ def render_figure(runs: dict, out_dir: str) -> str | None:
     return p
 
 
+def render_mixed_figure(runs: dict, out_dir: str) -> str | None:
+    """4-bar base×draft ablation — only when both mixed runs are present."""
+    corner = {bd: runs.get(key) for bd, key in _MIX_CORNERS.items()}
+    if not (corner[("bf16", "fp8")] and corner[("fp8", "bf16")]):
+        return None
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    grid = [("bf16", "bf16"), ("bf16", "fp8"), ("fp8", "bf16"), ("fp8", "fp8")]
+    labels = [f"{b} base\n{d} draft" for b, d in grid]
+    tput = [row(corner[g])["decode_tok_s"] if corner[g] else 0.0 for g in grid]
+    # matched precision = green, mixed = orange
+    colors = ["#76b900" if b == d else "#e08a1e" for b, d in grid]
+
+    fig, ax = plt.subplots(figsize=(6.5, 4))
+    bars = ax.bar(labels, tput, color=colors)
+    ax.set_ylabel("Decode throughput (tokens/s)")
+    ax.set_title("EAGLE3 base×draft precision (GB10) — matched (green) vs mixed (orange)")
+    for bar in bars:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{bar.get_height():.1f}",
+                ha="center", va="bottom")
+    fig.tight_layout()
+    p = os.path.join(out_dir, "fig_mixed_ablation.png")
+    fig.savefig(p, dpi=120); plt.close(fig)
+    return p
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default=None)
@@ -188,11 +276,14 @@ def main():
     with open(os.path.join(out_dir, "report_fp8_vs_bf16.md"), "w") as fh:
         fh.write(md)
     fig = render_figure(runs, out_dir)
+    mfig = render_mixed_figure(runs, out_dir)
 
     print(md)
     print(f"\nWrote: {os.path.join(out_dir, 'report_fp8_vs_bf16.md')}")
     if fig:
         print(f"       {fig}")
+    if mfig:
+        print(f"       {mfig}")
 
 
 if __name__ == "__main__":

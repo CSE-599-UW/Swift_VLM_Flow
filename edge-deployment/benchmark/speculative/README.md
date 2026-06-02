@@ -60,6 +60,21 @@ decode more than the compute-bound tree verification, shrinking SD's relative ed
 **fp8 base-only (27.0) ≈ bf16+EAGLE (27.4)**. Report: `results/reports/report_fp8_vs_bf16_*/`
 (via `report_fp8_vs_bf16.py`).
 
+**Mixed precision (base × draft, SD-on) — matched precision is required:**
+
+| base \ draft | bf16 | fp8 |
+|---|---|---|
+| **bf16** | 27.4 | 15.4 |
+| **fp8** | 23.0 | **47.3** |
+
+Both off-diagonal mixes drop *below pure bf16* — and fp8-base + bf16-draft (23.0) is even slower
+than decoding the fp8 base autoregressively (27.0, net-negative SD) — while acceptance stays ~2.5
+throughout. EAGLE feeds the base's hidden states (dim 10752) to the draft every step (1 verify +
+~6 draft forwards/token); a precision mismatch forces a dtype conversion on each hop that swamps
+any per-engine gain. Peak VRAM tracks the **base** precision. So **fp8 must be applied to both
+base and draft** — no partial-fp8 shortcut. (Reproduce by pointing the runner at a mixed engine
+dir via `SD_ENGINE_LLM_DIR`; `report_fp8_vs_bf16.py` renders the 2×2 when the mixed runs exist.)
+
 ## Pipeline
 
 ```
