@@ -19,7 +19,6 @@ Usage:
 import argparse
 import json
 import os
-import sys
 import time
 import traceback
 from datetime import datetime
@@ -47,7 +46,7 @@ def parse_args():
                         default="/workspace/trt_engines/qwen2vl_2b_bf16",
                         help="Path to TRT engine directory (must contain llm/ and vision/)")
     parser.add_argument("--precision", type=str, default="bf16",
-                        choices=["int8", "int4", "fp8", "bf16"],
+                        choices=["bf16", "int8", "int4", "smoothquant", "fp8", "int4_awq", "nvfp4"],
                         help="Engine precision label for reporting")
     return parser.parse_args()
 

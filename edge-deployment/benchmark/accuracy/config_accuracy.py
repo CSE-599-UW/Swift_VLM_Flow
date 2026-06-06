@@ -30,7 +30,7 @@ VQAV2_SAMPLES   = 500
 # Each split has 3,000 Yes/No questions about object hallucination.
 POPE_DATASET    = "lmms-lab/POPE"
 POPE_SPLITS     = ["random", "popular", "adversarial"]   # run all three
-POPE_SAMPLES    = 300   # per split; set to None for the full split
+POPE_SAMPLES    = 500   # per split; set to None for the full split
 
 # ── MME ────────────────────────────────────────────────────────────────────────
 # Two sub-categories: perception (14 tasks) + cognition (4 tasks)

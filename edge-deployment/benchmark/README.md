@@ -1,9 +1,7 @@
 # Benchmark — Swift-VLM-Flow
 
-Evaluation pipeline for Qwen2-VL-2B-Instruct — both **efficiency** (latency, VRAM) and
-**accuracy** (VQAv2, POPE, MME) — covering the HuggingFace baseline and the TensorRT-LLM engine.
-
-Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
+Evaluation pipeline for Qwen2-VL-2B-Instruct — **efficiency** (latency, VRAM) and
+**accuracy** (VQAv2, POPE, MME) — for the HuggingFace baseline and TensorRT-LLM engine.
 
 ---
 
@@ -13,7 +11,7 @@ Part of the **Swift-VLM-Flow** project (CSE 599S, UW).
 efficiency/
   run_efficiency_all.sh   →  latency & VRAM (baseline + all TRT precisions)
       ├── run_benchmark_baseline.py  (PyTorch bf16)
-      └── run_benchmark_trt.py       (TensorRT-LLM: bf16/fp8/int8/int4/int4_awq)
+      └── run_benchmark_trt.py       (TRT: bf16/int8/int4/smoothquant/fp8/int4_awq/nvfp4)
                                          ↓
                                results/efficiency/baseline/<id>.json
                                results/efficiency/trt/<precision>_<id>.json
@@ -28,17 +26,10 @@ accuracy/
 
 report.py                 →  charts + Markdown report
                                          ↓
-                               results/reports/report_<id>.md  +  *.png
+                               results/reports/report_<timestamp>/report.md + img/*.png
+
+results/reports/final_report.md          ← final written report (paper format)
 ```
-
----
-
-## Subdirectories
-
-| Directory | What it measures | Entry point |
-|---|---|---|
-| [efficiency/](efficiency/README.md) | Latency (TTFT, decode ms/tok), VRAM — PyTorch and TRT | `efficiency/run_efficiency_all.sh` |
-| [accuracy/](accuracy/README.md) | VQAv2 accuracy, POPE hallucination, MME perception/cognition — PyTorch and TRT | `accuracy/run_accuracy_all.sh` |
 
 ---
 
@@ -47,31 +38,35 @@ report.py                 →  charts + Markdown report
 ### Efficiency
 
 ```bash
-cd benchmark/efficiency
+cd /workspace/benchmark/efficiency
 bash run_efficiency_all.sh
 
 # Custom sample count / warmup / token budget
 bash run_efficiency_all.sh --num_samples 28 --warmup 3 --max_new_tokens 256
 ```
 
-→ See [efficiency/README.md](efficiency/README.md) for the full flag reference and engine directory layout.
-
 ### Accuracy
 
 ```bash
-cd benchmark/accuracy
-bash run_accuracy_all.sh                        # all tasks, both backends
-bash run_accuracy_all.sh --quick                # smoke-test (20 VQA / 30 POPE / 50 MME)
+cd /workspace/benchmark/accuracy
+bash run_accuracy_all.sh                        # all tasks, baseline + TRT bf16
+bash run_accuracy_all.sh --quick                # smoke-test (vqa=20 / pope=30 / mme=50 samples)
 bash run_accuracy_all.sh --skip-trt             # HF baseline only
 ```
-
-→ See [accuracy/README.md](accuracy/README.md) for scoring details and the full flag reference.
 
 ### Report
 
 ```bash
-# Full comparison (baseline + TRT + accuracy)
-python3 report.py 
+cd /workspace/benchmark
+
+# Auto-discover the latest JSON per tier (recommended)
+python3 report.py --latest
+
+# Use hardcoded INPUT_JSONS list in the script
+python3 report.py
+
+# Explicit files
+python3 report.py path/to/eff.json path/to/acc.json
 ```
 
 ---
@@ -81,12 +76,12 @@ python3 report.py
 ```
 results/
 ├── efficiency/
-│   ├── baseline/       # JSON from run_benchmark_baseline.py
-│   └── trt/            # JSON from run_benchmark_trt.py
+│   ├── baseline/   # JSON from run_benchmark_baseline.py
+│   └── trt/        # JSON from run_benchmark_trt.py
 ├── accuracy/
-│   ├── baseline/       # JSON from run_accuracy_baseline.py
-│   └── trt/            # JSON from run_accuracy_trt.py
-└── reports/            # .md reports and .png charts from report.py
+│   ├── baseline/   # JSON from run_accuracy_baseline.py
+│   └── trt/        # JSON from run_accuracy_trt.py
+└── reports/        # .md reports and .png charts from report.py
 ```
 
 ---
@@ -112,4 +107,4 @@ results/
 
 ---
 
-*Swift-VLM-Flow — Edge Deployment (Kevin) — CSE 599S, University of Washington*
+*Swift-VLM-Flow — Edge Deployment — CSE 599S, University of Washington*

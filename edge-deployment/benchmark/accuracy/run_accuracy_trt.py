@@ -46,7 +46,7 @@ def parse_args():
                         default=cfg.ENGINE_PATH,
                         help="TRT engine directory (must contain llm/ and vision/)")
     parser.add_argument("--precision", type=str, default="bf16",
-                        choices=["fp16", "fp8", "bf16", "int4", "int8"],
+                        choices=["bf16", "fp16", "int8", "int4", "smoothquant", "fp8", "int4_awq", "nvfp4"],
                         help="Engine precision label (for output filename only)")
     parser.add_argument("--vqa_samples", type=int, default=cfg.VQAV2_SAMPLES)
     parser.add_argument("--pope_samples", type=int, default=cfg.POPE_SAMPLES,

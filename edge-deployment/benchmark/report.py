@@ -13,11 +13,10 @@ Generates:
 
 import json
 import os
-import sys
+import re
 import argparse
 import datetime
 from pathlib import Path
-from collections import defaultdict
 
 import matplotlib
 matplotlib.use("Agg")
@@ -26,44 +25,133 @@ import matplotlib.patches as mpatches
 import numpy as np
 
 # ────────────────────────────── global config ──────────────────────────────
-OUTPUT_DIR = Path("../results/reports")
+OUTPUT_DIR  = Path("../results/reports")
+RESULTS_DIR = Path("../results")
+
+_TS_RE = re.compile(r'(\d{8}_\d{6})')
+
+
+def _tier_prefix(stem: str) -> str:
+    """
+    Strip the embedded timestamp and trailing version tag from a filename stem
+    to get a stable tier key used for grouping.
+
+    Examples:
+      "bf16_20260531_225452"          -> "bf16"
+      "int4_awq_20260601_000351"      -> "int4_awq"
+      "20260528_085407_bf16_v1"       -> "bf16"   (baseline efficiency)
+      "bf16_20260531_214526_bf16_v2"  -> "bf16"
+    """
+    m = _TS_RE.search(stem)
+    if not m:
+        return stem
+    before = stem[:m.start()].rstrip("_")
+    after  = stem[m.end():].lstrip("_")
+    after  = re.sub(r"_v\d+$", "", after)   # strip trailing _v1 / _v2
+    after  = re.sub(r"^v\d+_?", "", after)  # strip leading  v1_ / v2_
+    return before or after or "baseline"
+
+
+def discover_latest_jsons(results_dir: Path) -> list[Path]:
+    """
+    Scan the standard four subdirs under *results_dir* and return the newest
+    JSON for each (subdir, tier-prefix) pair, sorted by path.
+    """
+    subdirs = [
+        "efficiency/baseline",
+        "efficiency/trt",
+        "accuracy/baseline",
+        "accuracy/trt",
+    ]
+    best: dict[tuple, tuple] = {}   # (subdir, tier) -> (timestamp_str, Path)
+    for sub in subdirs:
+        d = results_dir / sub
+        if not d.exists():
+            continue
+        for f in d.glob("*.json"):
+            m = _TS_RE.search(f.stem)
+            ts     = m.group(1) if m else ""
+            prefix = _tier_prefix(f.stem)
+            key    = (sub, prefix)
+            if key not in best or ts > best[key][0]:
+                best[key] = (ts, f)
+
+    paths = sorted(v[1] for v in best.values())
+    return paths
 
 # 6 tiers × (efficiency + accuracy) = 12 JSONs for a full official run
 INPUT_JSONS = [
     "../results/efficiency/baseline/20260528_085407_bf16_v1.json",
-    "../results/efficiency/trt/bf16_20260528_085459_bf16_v1.json",
-    "../results/efficiency/trt/fp8_20260528_085545_fp8_v1.json",
-    "../results/efficiency/trt/int8_20260528_085621_int8_v1.json",
-    "../results/efficiency/trt/int4_20260528_085659_int4_v1.json",
-    "../results/efficiency/trt/int4_20260529_033633_int4_awq.json",
+    # "../results/efficiency/trt/bf16_20260528_085459_bf16_v1.json",
+    "../results/efficiency/trt/bf16_20260531_214526_bf16_v2.json",
+    # "../results/efficiency/trt/fp8_20260528_085545_fp8_v1.json",
+    # "../results/efficiency/trt/fp8_20260531_214912_fp8_v2.json",  # misconfigured (kv_cache_dtype fp8)
+    "../results/efficiency/trt/fp8_20260601_180232_no_kv_fp8.json",
+    # "../results/efficiency/trt/int8_20260528_085621_int8_v1.json",
+    "../results/efficiency/trt/int8_20260531_214641_int8_v2.json",
+    # "../results/efficiency/trt/int4_20260528_085659_int4_v1.json",
+    "../results/efficiency/trt/int4_20260531_214737_int4_v2.json",
+    # "../results/efficiency/trt/int4_20260529_033633_int4_awq.json",
+    "../results/efficiency/trt/int4_awq_20260531_214958_int4_awq_v2.json",
+    "../results/efficiency/trt/nvfp4_20260531_215044_nvfp4_v2.json",
+    "../results/efficiency/trt/smoothquant_20260531_214820_smoothquant_v2.json",
     "../results/accuracy/baseline/bf16_20260528_042224.json",
-    "../results/accuracy/trt/bf16_20260528_044749.json",
-    "../results/accuracy/trt/fp8_20260528_071102.json",
-    "../results/accuracy/trt/int8_20260528_181038.json",
-    "../results/accuracy/trt/int4_20260528_235602.json",
-    "../results/accuracy/trt/int4_20260528_063759.json", # awq
+    # "../results/accuracy/trt/bf16_20260528_044749.json",
+    "../results/accuracy/trt/bf16_20260531_225452.json",
+    # "../results/accuracy/trt/fp8_20260529_043513.json",
+    # "../results/accuracy/trt/fp8_20260601_012129.json",      # misconfigured (kv_cache_dtype fp8) — excluded from main comparison
+    # "../results/accuracy/trt/fp8_20260601_080726_no_fmha.json",
+    "../results/accuracy/trt/fp8_20260601_171455_no_kv_fp8.json",
+    # "../results/accuracy/trt/int8_20260528_181038.json",
+    "../results/accuracy/trt/int8_20260531_233156.json",
+    # "../results/accuracy/trt/int4_20260528_235602.json",
+    "../results/accuracy/trt/int4_20260531_234747.json",
+    # "../results/accuracy/trt/int4_20260528_063759.json", # awq
+    "../results/accuracy/trt/int4_awq_20260601_000351.json",
+    "../results/accuracy/trt/smoothquant_20260601_015244.json",
+    # "../results/accuracy/trt/nvfp4_<run_id>.json",
+    "../results/accuracy/trt/nvfp4_20260601_013737.json",
 ]
 
 # ────────────────────────────── colour scheme ──────────────────────────────
 # Canonical display order
-TIER_ORDER = ["pytorch-bf16", "trt-bf16", "trt-fp8", "trt-int8", "trt-int4", "trt-int_awq"]
+TIER_ORDER = [
+    "pytorch-bf16",
+    "trt-bf16",
+    "trt-int8",
+    "trt-int4",
+    "trt-smoothquant",
+    "trt-fp8-no-kv-fp8", # FP8 (corrected) — canonical FP8 result
+    "trt-fp8",           # FP8 (misconfigured) — kept for ablation figure only
+    "trt-fp8-no-fmha",   # ablation: fp8 without --use_fp8_context_fmha
+    "trt-int_awq",
+    "trt-nvfp4",
+]
 
 TIER_COLORS = {
-    "pytorch-bf16": "#5F5E5A",   # gray  – baseline
-    "trt-bf16":     "#185FA5",   # blue
-    "trt-fp8":      "#0F6E56",   # teal
-    "trt-int8":     "#BA7517",   # amber
-    "trt-int4":     "#993C1D",   # coral
-    "trt-int_awq":  "#533AB7",   # purple
+    "pytorch-bf16":    "#5F5E5A",   # gray     – baseline
+    "trt-bf16":        "#185FA5",   # blue
+    "trt-int8":        "#BA7517",   # amber
+    "trt-int4":        "#993C1D",   # coral
+    "trt-smoothquant": "#A83060",   # rose
+    "trt-fp8":         "#0F6E56",   # teal
+    "trt-fp8-no-fmha": "#5BAF96",   # light teal  – ablation: no FMHA
+    "trt-fp8-no-kv-fp8": "#A8D5C2", # pale teal   – ablation: no KV FP8
+    "trt-int_awq":     "#533AB7",   # purple
+    "trt-nvfp4":       "#1A6B8A",   # dark cyan
 }
 
 TIER_LABELS = {
-    "pytorch-bf16": "PyTorch BF16",
-    "trt-bf16":     "TRT BF16",
-    "trt-fp8":      "TRT FP8",
-    "trt-int8":     "TRT INT8",
-    "trt-int4":     "TRT INT4",
-    "trt-int_awq":  "TRT INT-AWQ",
+    "pytorch-bf16":    "PyTorch BF16",
+    "trt-bf16":        "TRT BF16",
+    "trt-int8":        "TRT INT8",
+    "trt-int4":        "TRT INT4",
+    "trt-smoothquant": "TRT SmoothQuant",
+    "trt-fp8-no-kv-fp8": "TRT FP8",
+    "trt-fp8":           "TRT FP8 (misconfigured)",
+    "trt-fp8-no-fmha":   "TRT FP8 (no FMHA)",
+    "trt-int_awq":       "TRT INT4-AWQ",
+    "trt-nvfp4":       "TRT NVFP4",
 }
 
 # ────────────────────────────── helpers ────────────────────────────────────
@@ -71,6 +159,7 @@ def tier_key(config: dict) -> str:
     """Derive a canonical tier string from a run config."""
     backend = config.get("backend", "").lower()
     precision = config.get("precision", "").lower()
+    engine_dir = config.get("engine_dir", "").lower()
 
     if "pytorch" in backend or "huggingface" in backend:
         prec = precision if precision else "bf16"
@@ -79,12 +168,23 @@ def tier_key(config: dict) -> str:
         # backend might be  'tensorrt-llm-fp8'  or precision field
         prec = precision if precision else ""
         if not prec:
-            for p in ["bf16", "fp8", "int8", "int4", "int_awq", "fp16"]:
+            for p in ["bf16", "fp8", "int8", "int4", "int_awq", "smoothquant", "nvfp4", "fp16"]:
                 if p in backend:
                     prec = p
                     break
         if not prec:
             prec = "bf16"
+        # Normalise precision strings to canonical tier names
+        if prec == "int4_awq":
+            prec = "int_awq"
+        # AWQ engine without explicit precision: detect via engine_dir path
+        if prec == "int4" and "awq" in engine_dir:
+            prec = "int_awq"
+        # FP8 ablation variants: detect via engine_dir suffix
+        if prec == "fp8" and "no_fmha" in engine_dir:
+            prec = "fp8-no-fmha"
+        elif prec == "fp8" and "no_kv_fp8" in engine_dir:
+            prec = "fp8-no-kv-fp8"
         return f"trt-{prec}"
     # fallback
     return f"{backend}-{precision}" if precision else backend
@@ -128,17 +228,19 @@ def load_runs(json_paths):
         # Determine type
         if "summary" in d:          # efficiency JSON
             tier = tier_key(cfg)
+            output_tokens_mean = d["summary"].get("output_tokens", {}).get("mean")
             eff_runs[tier] = {
-                "ttft_mean":        d["summary"]["ttft_ms"]["mean"],
-                "ttft_std":         d["summary"]["ttft_ms"]["std"],
-                "ttft_p95":         d["summary"]["ttft_ms"]["p95"],
-                "decode_mean":      d["summary"]["decode_latency_ms_per_tok"]["mean"],
-                "decode_std":       d["summary"]["decode_latency_ms_per_tok"]["std"],
-                "decode_p95":       d["summary"]["decode_latency_ms_per_tok"]["p95"],
-                "static_vram_gb":   d.get("static_vram_gb", None),
-                "dynamic_mean_gb":  d["summary"]["dynamic_vram_gb"]["mean"],
-                "dynamic_std_gb":   d["summary"]["dynamic_vram_gb"]["std"],
-                "config":           cfg,
+                "ttft_mean":           d["summary"]["ttft_ms"]["mean"],
+                "ttft_std":            d["summary"]["ttft_ms"]["std"],
+                "ttft_p95":            d["summary"]["ttft_ms"]["p95"],
+                "decode_mean":         d["summary"]["decode_latency_ms_per_tok"]["mean"],
+                "decode_std":          d["summary"]["decode_latency_ms_per_tok"]["std"],
+                "decode_p95":          d["summary"]["decode_latency_ms_per_tok"]["p95"],
+                "output_tokens_mean":  output_tokens_mean,
+                "static_vram_gb":      d.get("static_vram_gb", None),
+                "dynamic_mean_gb":     d["summary"]["dynamic_vram_gb"]["mean"],
+                "dynamic_std_gb":      d["summary"]["dynamic_vram_gb"]["std"],
+                "config":              cfg,
             }
         elif "results" in d:        # accuracy JSON
             # accuracy JSONs may have backend at top level, not in config
@@ -158,6 +260,7 @@ def load_runs(json_paths):
                 "mme_total":        mme.get("total_score"),
                 "mme_perception":   mme.get("perception_score"),
                 "mme_cognition":    mme.get("cognition_score"),
+                "mme_per_task":     mme.get("per_task", {}),
                 "config":           cfg,
             }
 
@@ -172,8 +275,6 @@ def fig_speed(eff_runs, img_dir):
         return None
 
     x = np.arange(len(tiers))
-    w = 0.35
-
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     fig.subplots_adjust(wspace=0.35)
 
@@ -259,11 +360,11 @@ def fig_vram(eff_runs, img_dir):
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
 
-    bars_s = ax.bar(x, static,  width=0.6, label="Static VRAM",
-                    color=[tier_color(t) for t in tiers_with_static], zorder=3)
-    bars_d = ax.bar(x, dynamic, width=0.6, bottom=static, label="Dynamic VRAM",
-                    color=[tier_color(t) for t in tiers_with_static],
-                    alpha=0.45, hatch="///", zorder=3)
+    ax.bar(x, static,  width=0.6, label="Static VRAM",
+           color=[tier_color(t) for t in tiers_with_static], zorder=3)
+    ax.bar(x, dynamic, width=0.6, bottom=static, label="Dynamic VRAM",
+           color=[tier_color(t) for t in tiers_with_static],
+           alpha=0.45, hatch="///", zorder=3)
 
     ax.set_xticks(x)
     ax.set_xticklabels([tier_label(t) for t in tiers_with_static], rotation=25, ha="right", fontsize=9)
@@ -345,11 +446,11 @@ def fig_mme(acc_runs, img_dir):
     x = np.arange(len(tiers_with_mme))
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
-    bars_p = ax.bar(x, perception, width=0.6, label="Perception",
-                    color=[tier_color(t) for t in tiers_with_mme], zorder=3)
-    bars_c = ax.bar(x, cognition,  width=0.6, bottom=perception, label="Cognition",
-                    color=[tier_color(t) for t in tiers_with_mme],
-                    alpha=0.5, hatch="///", zorder=3)
+    ax.bar(x, perception, width=0.6, label="Perception",
+           color=[tier_color(t) for t in tiers_with_mme], zorder=3)
+    ax.bar(x, cognition,  width=0.6, bottom=perception, label="Cognition",
+           color=[tier_color(t) for t in tiers_with_mme],
+           alpha=0.5, hatch="///", zorder=3)
 
     ax.set_xticks(x)
     ax.set_xticklabels([tier_label(t) for t in tiers_with_mme], rotation=25, ha="right", fontsize=9)
@@ -373,34 +474,147 @@ def fig_mme(acc_runs, img_dir):
     return path
 
 
-def fig_pareto(eff_runs, acc_runs, img_dir):
-    """Scatter: Decode Latency vs VQAv2 accuracy; bubble size = static VRAM."""
+def fig_tradeoff(eff_runs, acc_runs, img_dir):
+    """3-panel scatter: total latency (TTFT + decode) vs VQAv2 / POPE F1 / MME."""
     common = sorted_tiers(set(eff_runs) & set(acc_runs))
     if len(common) < 2:
         return None
-    tiers_with_vqa = [t for t in common if acc_runs[t].get("vqa_acc") is not None]
-    if len(tiers_with_vqa) < 2:
+
+    panels = [
+        ("vqa_acc",     "VQAv2 Accuracy (%)"),
+        ("pope_avg_f1", "POPE Avg F1 (%)"),
+        ("mme_total",   "MME Total Score"),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig.subplots_adjust(wspace=0.38)
+
+    for ax, (acc_key, ylabel) in zip(axes, panels):
+        tiers = [t for t in common
+                 if acc_runs[t].get(acc_key) is not None
+                 and eff_runs[t].get("ttft_mean") is not None]
+        if len(tiers) < 2:
+            ax.set_visible(False)
+            continue
+
+        for t in tiers:
+            e = eff_runs[t]
+            n_tok = e.get("output_tokens_mean") or 50
+            total_lat = e["ttft_mean"] + e["decode_mean"] * n_tok
+            y_val = acc_runs[t][acc_key]
+            s_val = (e.get("static_vram_gb") or 6.0) * 80
+
+            ax.scatter(total_lat, y_val, s=s_val, color=tier_color(t),
+                       alpha=0.85, edgecolors="#3d3d3a", linewidths=0.6, zorder=3)
+            ax.annotate(tier_label(t), (total_lat, y_val),
+                        textcoords="offset points", xytext=(6, 4), fontsize=8)
+
+        ax.set_xlabel("Total Latency (ms)\n= TTFT + Decode × Output Tokens", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(ylabel, fontsize=11, fontweight="bold")
+        ax.grid(linestyle="--", alpha=0.4)
+
+    path = img_dir / "fig_tradeoff.png"
+    savefig(fig, path)
+    return path
+
+
+_BROKEN_FP8_JSON = Path(__file__).parent / "../results/accuracy/trt/fp8_20260601_012129.json"
+
+def fig_fp8_ablation(acc_runs, img_dir):
+    """
+    Grouped bar: FP8 ablation study.
+    Compares PyTorch BF16 / TRT INT8 / TRT FP8 (broken) / TRT FP8 (fixed).
+    Loads the broken FP8 JSON directly so it need not be in INPUT_JSONS
+    (keeping it out of the main comparison charts).
+    """
+    required = {"pytorch-bf16", "trt-fp8-no-kv-fp8"}
+    if not required.issubset(acc_runs.keys()):
         return None
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    # Inject the misconfigured FP8 result for the ablation comparison only.
+    ablation_runs = dict(acc_runs)
+    if "trt-fp8" not in ablation_runs and _BROKEN_FP8_JSON.exists():
+        with open(_BROKEN_FP8_JSON) as f:
+            d = json.load(f)
+        r = d.get("results", {})
+        vqa  = r.get("vqa",  {}).get("scores", {})
+        pope = r.get("pope", {}).get("scores", r.get("pope", {}))
+        mme  = r.get("mme",  {}).get("scores", {})
+        ablation_runs["trt-fp8"] = {
+            "vqa_acc":      vqa.get("accuracy"),
+            "pope_avg_f1":  pope.get("avg_f1"),
+            "pope_avg_acc": pope.get("avg_accuracy"),
+            "mme_total":    mme.get("total_score"),
+            "config":       d.get("config", {}),
+        }
 
-    for t in tiers_with_vqa:
-        x_val = eff_runs[t]["decode_mean"]
-        y_val = acc_runs[t]["vqa_acc"]
-        s_val = eff_runs[t].get("static_vram_gb") or 6.0
-        ax.scatter(x_val, y_val, s=s_val * 80, color=tier_color(t),
-                   alpha=0.85, edgecolors="#3d3d3a", linewidths=0.6, zorder=3)
-        ax.annotate(tier_label(t),
-                    (x_val, y_val),
-                    textcoords="offset points", xytext=(7, 4),
-                    fontsize=8.5)
+    if "trt-fp8" not in ablation_runs:
+        return None
 
-    ax.set_xlabel("Decode Latency per Token (ms)", fontsize=10)
-    ax.set_ylabel("VQAv2 Accuracy (%)", fontsize=10)
-    ax.set_title("Accuracy–Latency Pareto  (bubble size ∝ Static VRAM)", fontsize=11, fontweight="bold")
-    ax.grid(linestyle="--", alpha=0.4)
+    ablation_tiers = [
+        "pytorch-bf16",
+        "trt-int8",
+        "trt-fp8",
+        "trt-fp8-no-kv-fp8",
+    ]
+    ablation_tiers = [t for t in ablation_tiers if t in ablation_runs]
+    acc_runs = ablation_runs  # shadow for the rest of the function
 
-    path = img_dir / "fig_pareto.png"
+    panels = [
+        ("vqa_acc",     "VQAv2 Accuracy (%)", 70, 100),
+        ("pope_avg_f1", "POPE Avg F1 (%)",    83, 92),
+        ("mme_total",   "MME Total Score",    1700, 2050),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
+    fig.subplots_adjust(wspace=0.38)
+    fig.suptitle("FP8 Ablation: Effect of KV Cache Quantization",
+                 fontsize=12, fontweight="bold", y=1.02)
+
+    x = np.arange(len(ablation_tiers))
+    width = 0.6
+
+    for ax, (key, title, ymin, ymax) in zip(axes, panels):
+        vals   = [acc_runs[t].get(key) for t in ablation_tiers]
+        colors = [tier_color(t) for t in ablation_tiers]
+        bars   = ax.bar(x, [v if v is not None else 0 for v in vals],
+                        width=width, color=colors, zorder=3,
+                        edgecolor="#3d3d3a", linewidth=0.5)
+
+        # Highlight the two FP8 bars with a bracket / annotation
+        fp8_idx     = ablation_tiers.index("trt-fp8")       if "trt-fp8"           in ablation_tiers else None
+        fp8fix_idx  = ablation_tiers.index("trt-fp8-no-kv-fp8") if "trt-fp8-no-kv-fp8" in ablation_tiers else None
+        if fp8_idx is not None and fp8fix_idx is not None and vals[fp8_idx] and vals[fp8fix_idx]:
+            delta = vals[fp8fix_idx] - vals[fp8_idx]
+            mid_x = (fp8_idx + fp8fix_idx) / 2
+            top_y = max(vals[fp8_idx], vals[fp8fix_idx])
+            sign  = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
+            suffix = "%" if key != "mme_total" else ""
+            ax.annotate(
+                f"fix: {sign}{suffix}",
+                xy=(mid_x, top_y),
+                xytext=(mid_x, top_y + (ymax - ymin) * 0.06),
+                ha="center", fontsize=8.5, color="#0F6E56", fontweight="bold",
+                arrowprops=None,
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier_label(t) for t in ablation_tiers],
+                           rotation=18, ha="right", fontsize=9)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.set_ylim(ymin, ymax)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
+
+        for bar, v in zip(bars, vals):
+            if v is not None:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + (ymax - ymin) * 0.008,
+                        f"{v:.1f}" if key != "mme_total" else f"{v:.0f}",
+                        ha="center", va="bottom", fontsize=8)
+
+    path = img_dir / "fig_fp8_ablation.png"
     savefig(fig, path)
     return path
 
@@ -464,8 +678,12 @@ def build_report(eff_runs, acc_runs, img_dir, output_dir):
         if p: imgs["mme"] = p
 
     if eff_runs and acc_runs:
-        p = fig_pareto(eff_runs, acc_runs, img_dir)
-        if p: imgs["pareto"] = p
+        p = fig_tradeoff(eff_runs, acc_runs, img_dir)
+        if p: imgs["tradeoff"] = p
+
+    if acc_runs:
+        p = fig_fp8_ablation(acc_runs, img_dir)
+        if p: imgs["fp8_ablation"] = p
 
     def img_link(key, alt):
         if key in imgs:
@@ -530,18 +748,47 @@ def build_report(eff_runs, acc_runs, img_dir, output_dir):
             lines.append(img_link("mme", "MME Score"))
             lines.append("")
 
-    # ── Pareto ──
-    if "pareto" in imgs:
+    # ── Tradeoff ──
+    if "tradeoff" in imgs:
         lines.append("## Accuracy–Latency Tradeoff\n")
-        lines.append("Each point is one quantization tier. Bubble size scales with static VRAM.\n")
-        lines.append(img_link("pareto", "Pareto Scatter"))
+        lines.append("X-axis: total end-to-end latency (TTFT + decode latency × mean output tokens). "
+                     "Each point is one quantization tier. Bubble size scales with static VRAM.\n")
+        lines.append(img_link("tradeoff", "Accuracy–Latency Tradeoff"))
+        lines.append("")
+
+    # ── FP8 ablation ──
+    if "fp8_ablation" in imgs:
+        lines.append("## FP8 Ablation: KV Cache Quantization\n")
+        lines.append("Accuracy comparison isolating the effect of `--kv_cache_dtype fp8`. "
+                     "Removing FP8 KV cache fully restores accuracy while preserving decode speed.\n")
+        lines.append(img_link("fp8_ablation", "FP8 Ablation"))
         lines.append("")
 
     # ── Per-task MME detail ──
-    mme_detail_tiers = [t for t in all_tiers if t in acc_runs
-                        and acc_runs[t].get("config")]
-    # Load raw mme per_task if available — we need the original JSON for this
-    # (we only stored aggregates in acc_runs, so skip per-task table for now)
+    mme_detail_tiers = [t for t in all_tiers
+                        if t in acc_runs and acc_runs[t].get("mme_per_task")]
+    if mme_detail_tiers:
+        # Collect union of all task names across tiers, sorted
+        all_tasks = sorted({
+            task
+            for t in mme_detail_tiers
+            for task in acc_runs[t]["mme_per_task"]
+        })
+        # Header
+        tier_hdrs = " | ".join(f"**{tier_label(t)}**" for t in mme_detail_tiers)
+        lines.append("## MME Per-Task Detail\n")
+        lines.append(f"| Task | {tier_hdrs} |")
+        lines.append("|" + "---|" * (1 + len(mme_detail_tiers)))
+        for task in all_tasks:
+            cells = []
+            for t in mme_detail_tiers:
+                td = acc_runs[t]["mme_per_task"].get(task)
+                if td:
+                    cells.append(f"{td['score']:.0f}/{td['max_score']:.0f} ({td['accuracy']:.1f}%)")
+                else:
+                    cells.append("–")
+            lines.append(f"| {task} | " + " | ".join(cells) + " |")
+        lines.append("")
 
     # ── POPE detail ──
     pope_detail_lines = []
@@ -570,14 +817,31 @@ def create_parser():
                         help="Efficiency or accuracy JSON files (overrides INPUT_JSONS if provided)")
     parser.add_argument("--output-dir", default=None,
                         help="Root output directory (overrides OUTPUT_DIR if provided)")
+    parser.add_argument("--latest", action="store_true",
+                        help="Auto-discover the newest JSON per tier under --results-dir")
+    parser.add_argument("--results-dir", default=None,
+                        help="Root of the results tree used by --latest "
+                             "(default: ../results relative to this script)")
     return parser
 
 
 def main():
     args = create_parser().parse_args()
 
-    json_paths = args.jsons if args.jsons else INPUT_JSONS
-    base_dir   = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
+    if args.latest:
+        script_dir   = Path(__file__).resolve().parent
+        results_root = Path(args.results_dir).resolve() if args.results_dir \
+                       else (script_dir / RESULTS_DIR).resolve()
+        json_paths = discover_latest_jsons(results_root)
+        print(f"Auto-discovered {len(json_paths)} latest JSON(s) under {results_root}:")
+        for p in json_paths:
+            print(f"  {p.relative_to(results_root)}")
+    elif args.jsons:
+        json_paths = args.jsons
+    else:
+        json_paths = INPUT_JSONS
+
+    base_dir = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
 
     timestamp  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir    = base_dir / f"report_{timestamp}"

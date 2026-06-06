@@ -2,48 +2,33 @@
 
 **CSE 599S, University of Washington**
 
-Kevin's role in this sub-project is baseline benchmarking and TensorRT engine
-conversion. The benchmark uses a two-tool approach — `run_benchmark.py` for
-efficiency metrics and `lmms-eval` for accuracy — each tool doing what it is
-best at. The goal is to measure performance before and after TRT optimization
-to quantify the speedup from TensorRT-LLM fp16 and fp8 engine conversion.
+Benchmarks Qwen2-VL-2B-Instruct across seven quantization tiers using TensorRT-LLM.
+Measures **efficiency** (TTFT, decode latency, VRAM) and **accuracy** (VQAv2, POPE, MME)
+for the HuggingFace PyTorch baseline and six TRT engine precisions.
+
+**Final report**: [`results/reports/final_report.md`](results/reports/final_report.md)
 
 ---
 
-## Architecture
+## Hardware
 
-```
-run_benchmark.py             →  TTFT, Throughput, VRAM       (efficiency)
-lmms-eval                    →  VQAv2 exact_match             (accuracy)
-generate_combined_report.py  →  merged report + charts
-```
-
----
-
-## Hardware Requirements
-
-- GPU: NVIDIA RTX 5060 Ti or equivalent (16 GB VRAM recommended)
+- GPU: NVIDIA RTX 5060 Ti (16 GB VRAM) — fp8 and nvfp4 require Ada/Blackwell
 - CUDA Driver: 12.8+
-- OS: Ubuntu 22.04
+- System RAM: 32 GB+ (Stage 3 vision encoder build peaks at ~20 GB)
 
 ---
 
 ## Quick Start
 
-### Step 1 — Clone and get model weights
+### Step 1 — Get model weights
 
 ```bash
-git clone https://github.com/CSE-599-UW/Swift_VLM_Flow.git
-cd Swift_VLM_Flow/edge-deployment
-
-# Download model — see models/README.md for Google Drive link
-# OR via HuggingFace:
 pip install huggingface_hub
-hf download Qwen/Qwen2-VL-2B-Instruct \
+huggingface-cli download Qwen/Qwen2-VL-2B-Instruct \
   --local-dir ./models/Qwen2-VL-2B-Instruct
 ```
 
-### Step 2 — Build Docker image (first time only, ~10-15 min)
+### Step 2 — Build Docker image (first time, ~10–15 min)
 
 ```bash
 docker build -t vlm-bench:latest .
@@ -61,132 +46,97 @@ docker run -it --gpus all \
   -v ~/Workspace/Course/CSE599s/Project/Swift_VLM_Flow/edge-deployment/models:/workspace/models \
   vlm-bench:latest bash
 ```
-<!-- # -v ~/Workspace/Course/CSE599s/Project/models:/workspace/models \ -->
 
+### Step 4 — Build TRT engines (inside container)
 
-### Step 4 — Run efficiency benchmark (inside container)
+```bash
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant bf16
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int8
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int4
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant smoothquant
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant fp8 --no_kv_fp8
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant int4_awq
+bash /workspace/scripts/build_trt_engines.sh --model qwen2vl_2b --quant nvfp4
+```
+
+See [scripts/README.md](scripts/README.md) for build details and the OOM warning for Stage 3.
+
+> **FP8 note**: `--no_kv_fp8` is required for correct accuracy on Qwen2-VL. Using `--kv_cache_dtype fp8` (the default text-LLM recipe) causes severe accuracy regression (VQAv2 −8.8 pp) because visual token KV distributions exceed FP8's dynamic range. See §5.1 of the [final report](results/reports/final_report.md) for the ablation details.
+
+### Step 5 — Run efficiency benchmark
+
+```bash
+cd /workspace/benchmark/efficiency
+bash run_efficiency_all.sh
+```
+
+### Step 6 — Run accuracy benchmark
+
+```bash
+cd /workspace/benchmark/accuracy
+bash run_accuracy_all.sh
+```
+
+### Step 7 — Generate report
 
 ```bash
 cd /workspace/benchmark
-python3 run_benchmark.py --num_samples 50 --warmup 3
-# Output: results/raw/*.json + results/reports/*.md + charts
+python3 report.py --latest
+# Output: results/reports/report_<timestamp>/report.md + img/*.png
 ```
 
-### Step 5 — Run accuracy benchmark (inside container)
-
-```bash
-python -m lmms_eval \
-  --model qwen2_vl \
-  --model_args pretrained=/workspace/models/Qwen2-VL-2B-Instruct \
-  --tasks vqav2_val \
-  --batch_size 1 \
-  --limit 500 \
-  --output_path /workspace/results/lmms_eval/
-# Output: results/lmms_eval/**/*_results.json
-```
-
-### Step 6 — Generate combined report
-
-```bash
-python3 generate_combined_report.py
-# Output: results/reports/combined_*.md + combined_summary_*.png
-```
+The final written report is at [`results/reports/final_report.md`](results/reports/final_report.md).
 
 ---
 
-## TRT Engine Conversion
-
-After establishing the baseline benchmark, convert the model to
-TensorRT for optimized inference:
-
-```bash
-# Inside the container — takes ~15 min, requires 30GB+ RAM
-chmod +x /workspace/scripts/build_trt_engines.sh
-/workspace/scripts/build_trt_engines.sh
-```
-
-> **RAM requirement**: Stage 3 (vision encoder) peaks at ~20GB RAM.
-> See [docs/TensorRT.md](docs/TensorRT.md) for swap expansion instructions
-> if you encounter OOM errors.
-
-After conversion, run the TRT benchmark:
-```bash
-python3 benchmark/run_benchmark_trt.py --num_samples 50 --warmup 3
-```
-
-See [docs/TensorRT.md](docs/TensorRT.md) for full details and known issues.
-
----
-
-## Why Two Separate Tools?
-
-`run_benchmark.py` and `lmms-eval` serve fundamentally different purposes and
-cannot share a single configuration. `lmms-eval` uses `max_new_tokens=16` and
-short-answer prompts specifically optimized for accuracy evaluation against
-VQAv2 ground-truth annotations — this would distort throughput measurements by
-generating far fewer tokens than real inference. `run_benchmark.py` uses
-`min_new_tokens=20` for stable throughput measurement with proper warmup and
-per-sample VRAM tracking, conditions that are inappropriate for accuracy
-evaluation. Keeping the tools separate ensures each metric is measured under
-the correct conditions.
-
----
-
-## Benchmark Metrics
-
-| Metric | Tool | Description |
-|--------|------|-------------|
-| TTFT (ms) | run_benchmark.py | Time to First Token |
-| Total Latency (ms) | run_benchmark.py | Full generation time |
-| Throughput (tok/s) | run_benchmark.py | Output tokens per second |
-| Peak VRAM (GB) | run_benchmark.py | Max GPU memory during inference |
-| VQAv2 Accuracy | lmms-eval | Exact match, standard research metric |
-
----
-
-## Official Baseline Results
-
-Qwen2-VL-2B-Instruct, fp16, PyTorch — Run ID: `20260509_030136`
-
-| Metric | Value |
-|--------|-------|
-| TTFT (ms) | 127.8 |
-| Total Latency (ms) | 570.4 |
-| Throughput (tok/s) | 51.0 |
-| Peak VRAM (GB) | 4.26 |
-| Model VRAM (GB) | 4.55 |
-| VQAv2 Accuracy | 83.4% (500 samples) |
-
----
-
-## Output Files
+## Repository Layout
 
 ```
-results/
-├── raw/                    # per-sample efficiency JSON (gitignored)
-├── lmms_eval/              # lmms-eval accuracy JSON (gitignored)
-└── reports/                # markdown reports + PNG charts (tracked in git)
+edge-deployment/
+├── benchmark/
+│   ├── efficiency/     # latency & VRAM benchmark
+│   ├── accuracy/       # VQAv2 / POPE / MME benchmark
+│   ├── report.py       # chart + Markdown report generator
+│   └── README.md
+├── scripts/
+│   ├── build_trt_engines.sh   # TRT engine builder (all quant modes)
+│   └── README.md
+├── models/             # HF model weights (gitignored)
+├── results/            # benchmark outputs (gitignored except reports/)
+│   ├── efficiency/
+│   ├── accuracy/
+│   └── reports/        # tracked in git
+└── Dockerfile
 ```
 
 ---
 
-## TRT Comparison Table
+## Quantization Tiers
 
-| Metric | PyTorch fp16 | TRT fp16 | TRT fp8 |
-|--------|-------------|----------|---------|
-| TTFT (ms) | 127.8 | — | — |
-| Throughput (tok/s) | 51.0 | — | — |
-| Peak VRAM (GB) | 4.26 | — | — |
-| VQAv2 Accuracy | 83.4% | — | — |
-| Speedup | 1.0× | — | — |
+| Tier | Precision | Build Pipeline |
+|---|---|---|
+| PyTorch BF16 | W16A16 | HF baseline, no engine needed |
+| TRT BF16 | W16A16 | Pipeline A |
+| TRT INT8 | W8A16 | Pipeline A |
+| TRT INT4 | W4A16 | Pipeline A |
+| TRT SmoothQuant | W8A8 | Pipeline A |
+| TRT FP8 | W8A8 | Pipeline B (ModelOpt, Ada/Hopper/Blackwell) — use `--no_kv_fp8` |
+| TRT INT4-AWQ | W4A16 | Pipeline B (ModelOpt) |
+| TRT NVFP4 | W4A8 | Pipeline B (ModelOpt, Blackwell only) |
 
 ---
 
-## Next Steps
+## Metrics
 
-- TRT fp16 engine conversion (`convert_checkpoint.py` → `trtllm-build`)
-- TRT fp8 quantization
-- Fill TRT columns in comparison table above
+| Metric | Description |
+|---|---|
+| `ttft_ms` | Time to First Token — prefill cost |
+| `decode_latency_ms_per_tok` | Decode time per output token |
+| `static_vram_gb` | VRAM after model/engine load |
+| `dynamic_vram_gb` | Per-inference VRAM above static baseline |
+| VQAv2 accuracy | Soft-match against 10 human annotations (500 samples) |
+| POPE avg F1 | Object hallucination across 3 splits × 500 samples |
+| MME total score | Perception (10 tasks) + Cognition (4 tasks) pair scoring |
 
 ---
 

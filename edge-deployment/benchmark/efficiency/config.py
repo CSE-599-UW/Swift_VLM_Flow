@@ -7,13 +7,17 @@ All paths, hyperparameters, and benchmark settings are defined here.
 import os
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-MODEL_PATH = "/workspace/models/Qwen2-VL-2B-Instruct"
+# MODEL_PATH = "/workspace/models/Qwen2-VL-2B-Instruct"
+MODEL_PATH = "/workspace/models/Qwen2-VL-7B-Instruct"
+
 RESULTS_DIR = "/workspace/results"
 RAW_DIR = os.path.join(RESULTS_DIR, "efficiency")
 REPORTS_DIR = os.path.join(RESULTS_DIR, "reports")
 
 # ── Model Settings ─────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen2-VL-2B-Instruct"
+# MODEL_NAME = "Qwen2-VL-2B-Instruct"
+MODEL_NAME = "Qwen2-VL-7B-Instruct"
+
 PRECISION = "bf16"
 BACKEND = "pytorch"
 DEVICE = "cuda"
