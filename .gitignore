@@ -17,6 +17,10 @@ __pycache__/
 *.pyc
 *.pyo
 .cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
 
 # Docker
 *.tar
